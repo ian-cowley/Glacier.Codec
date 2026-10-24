@@ -330,13 +330,6 @@ public class Challenger1M6AesGcmTortureTests
         var h7 = AesGcmKernel.LoadPower(hTable.AsSpan(96, 16));
         var h8 = AesGcmKernel.LoadPower(hTable.AsSpan(112, 16));
 
-        var h8to5 = System.Runtime.Intrinsics.Vector512.Create(
-            System.Runtime.Intrinsics.Vector256.Create(h8, h7),
-            System.Runtime.Intrinsics.Vector256.Create(h6, h5));
-        var h4to1 = System.Runtime.Intrinsics.Vector512.Create(
-            System.Runtime.Intrinsics.Vector256.Create(h4, h3),
-            System.Runtime.Intrinsics.Vector256.Create(h2, h1));
-
         // Test over 500 blocks of random test data
         byte[] testData = new byte[500 * 16];
         RandomNumberGenerator.Fill(testData);
@@ -348,18 +341,30 @@ public class Challenger1M6AesGcmTortureTests
             AesGcmKernelScalar.GhashBlock(ref yScalarHi, ref yScalarLo, testData.AsSpan(i * 16, 16), hHi, hLo);
         }
 
-        // 2. Single-block PCLMULQDQ GHASH
-        ulong yPclmulHi = 0, yPclmulLo = 0;
-        AesGcmKernelPclmul.ProcessBlocks(ref yPclmulHi, ref yPclmulLo, testData, h1, h2, h3, h4);
+        // 2. Single-block PCLMULQDQ GHASH (if supported)
+        if (System.Runtime.Intrinsics.X86.Pclmulqdq.IsSupported)
+        {
+            ulong yPclmulHi = 0, yPclmulLo = 0;
+            AesGcmKernelPclmul.ProcessBlocks(ref yPclmulHi, ref yPclmulLo, testData, h1, h2, h3, h4);
+            Assert.Equal(yScalarHi, yPclmulHi);
+            Assert.Equal(yScalarLo, yPclmulLo);
+        }
 
-        // 3. VPCLMULQDQ 512 GHASH
-        ulong yPclmul512Hi = 0, yPclmul512Lo = 0;
-        AesGcmKernelPclmul512.ProcessBlocks(ref yPclmul512Hi, ref yPclmul512Lo, testData, h8to5, h4to1, h1, h2, h3, h4);
+        // 3. VPCLMULQDQ 512 GHASH (if supported)
+        if (AesGcmKernelPclmul512.IsSupported)
+        {
+            var h8to5 = System.Runtime.Intrinsics.Vector512.Create(
+                System.Runtime.Intrinsics.Vector256.Create(h8, h7),
+                System.Runtime.Intrinsics.Vector256.Create(h6, h5));
+            var h4to1 = System.Runtime.Intrinsics.Vector512.Create(
+                System.Runtime.Intrinsics.Vector256.Create(h4, h3),
+                System.Runtime.Intrinsics.Vector256.Create(h2, h1));
 
-        Assert.Equal(yScalarHi, yPclmulHi);
-        Assert.Equal(yScalarLo, yPclmulLo);
-        Assert.Equal(yScalarHi, yPclmul512Hi);
-        Assert.Equal(yScalarLo, yPclmul512Lo);
+            ulong yPclmul512Hi = 0, yPclmul512Lo = 0;
+            AesGcmKernelPclmul512.ProcessBlocks(ref yPclmul512Hi, ref yPclmul512Lo, testData, h8to5, h4to1, h1, h2, h3, h4);
+            Assert.Equal(yScalarHi, yPclmul512Hi);
+            Assert.Equal(yScalarLo, yPclmul512Lo);
+        }
     }
 
     // =========================================================================
