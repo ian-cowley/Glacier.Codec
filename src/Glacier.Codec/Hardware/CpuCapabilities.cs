@@ -36,7 +36,6 @@ public static class CpuCapabilities
 {
     private static readonly bool s_hasShaNi;
     private static readonly bool s_hasVectorAes;
-    private static readonly bool s_hasVpclmulqdq;
 
     static CpuCapabilities()
     {
@@ -46,14 +45,12 @@ public static class CpuCapabilities
             {
                 var (_, ebx, ecx, _) = X86Base.CpuId(7, 0);
                 s_hasShaNi = (ebx & (1 << 29)) != 0;
-                s_hasVectorAes = (ecx & (1 << 9)) != 0;
-                s_hasVpclmulqdq = (ecx & (1 << 10)) != 0 || Pclmulqdq.V512.IsSupported;
+                s_hasVectorAes = (ecx & (1 << 9)) != 0 && (Avx512F.IsSupported || System.Runtime.Intrinsics.X86.Aes.IsSupported);
             }
             catch
             {
                 s_hasShaNi = false;
                 s_hasVectorAes = false;
-                s_hasVpclmulqdq = Pclmulqdq.V512.IsSupported;
             }
         }
     }
@@ -79,8 +76,8 @@ public static class CpuCapabilities
     public static bool HasAesNi => System.Runtime.Intrinsics.X86.Aes.IsSupported;
     public static bool HasPclmulqdq => Pclmulqdq.IsSupported;
     public static bool HasPclmulqdqV256 => Pclmulqdq.V256.IsSupported;
-    public static bool HasPclmulqdqV512 => Pclmulqdq.V512.IsSupported;
-    public static bool HasVpclmulqdq => s_hasVpclmulqdq;
+    public static bool HasPclmulqdqV512 => Pclmulqdq.V512.IsSupported && Avx512BW.IsSupported && Vector512.IsHardwareAccelerated;
+    public static bool HasVpclmulqdq => Pclmulqdq.V512.IsSupported && Avx512BW.IsSupported && Vector512.IsHardwareAccelerated;
     public static bool HasVectorAes => s_hasVectorAes;
     public static bool HasShaNi => s_hasShaNi;
     public static bool HasGfni => Gfni.IsSupported;

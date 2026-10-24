@@ -12,6 +12,8 @@ using System.Runtime.Intrinsics.X86;
 /// </summary>
 internal static unsafe class AesGcmKernelPclmul512
 {
+    public static bool IsSupported => Pclmulqdq.V512.IsSupported && Avx512BW.IsSupported && Vector512.IsHardwareAccelerated;
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector128<ulong> Fold512(Vector512<ulong> v)
     {

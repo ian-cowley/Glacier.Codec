@@ -375,7 +375,7 @@ internal static unsafe class AesGcmKernel
             var h3 = LoadPower(hTable.Slice(32, 16));
             var h4 = LoadPower(hTable.Slice(48, 16));
 
-            if (CpuCapabilities.HasVpclmulqdq && hTable.Length >= 128)
+            if (CpuCapabilities.HasVpclmulqdq && AesGcmKernelPclmul512.IsSupported && hTable.Length >= 128)
             {
                 var h5 = LoadPower(hTable.Slice(64, 16));
                 var h6 = LoadPower(hTable.Slice(80, 16));

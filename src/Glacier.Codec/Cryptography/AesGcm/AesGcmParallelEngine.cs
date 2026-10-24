@@ -175,7 +175,7 @@ internal static unsafe class AesGcmParallelEngine
         var h2 = AesGcmKernel.LoadPower(hTable.Slice(16, 16));
         var h3 = AesGcmKernel.LoadPower(hTable.Slice(32, 16));
         var h4 = AesGcmKernel.LoadPower(hTable.Slice(48, 16));
-        bool hasV512 = CpuCapabilities.HasVpclmulqdq && hTable.Length >= 128;
+        bool hasV512 = CpuCapabilities.HasVpclmulqdq && AesGcmKernelPclmul512.IsSupported && hTable.Length >= 128;
         Vector512<ulong> h8to5 = default, h4to1 = default;
         if (hasV512)
         {
@@ -304,7 +304,7 @@ internal static unsafe class AesGcmParallelEngine
         var h2 = AesGcmKernel.LoadPower(hTable.Slice(16, 16));
         var h3 = AesGcmKernel.LoadPower(hTable.Slice(32, 16));
         var h4 = AesGcmKernel.LoadPower(hTable.Slice(48, 16));
-        bool hasV512 = CpuCapabilities.HasVpclmulqdq && hTable.Length >= 128;
+        bool hasV512 = CpuCapabilities.HasVpclmulqdq && AesGcmKernelPclmul512.IsSupported && hTable.Length >= 128;
         Vector512<ulong> h8to5 = default, h4to1 = default;
         if (hasV512)
         {
