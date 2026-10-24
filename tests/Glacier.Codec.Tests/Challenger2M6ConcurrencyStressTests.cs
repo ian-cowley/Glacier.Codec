@@ -533,8 +533,11 @@ public class Challenger2M6ConcurrencyStressTests
                     readyEvent.Signal();
                     startEvent.Wait();
 
-                    // Concurrent warm-up across all 24 threads: populates pool cache with 24 slabs under concurrency
-                    Blake3Hasher.Hash(threadInput, threadOutput);
+                    // Concurrent warm-up across all 24 threads: JIT and pool cache population
+                    for (int w = 0; w < 3; w++)
+                    {
+                        Blake3Hasher.Hash(threadInput.AsSpan(), threadOutput.AsSpan());
+                    }
                     Assert.True(expectedHash.AsSpan().SequenceEqual(threadOutput));
 
                     // Steady-state measurement: zero heap allocations
@@ -603,12 +606,15 @@ public class Challenger2M6ConcurrencyStressTests
                 byte[] tag = new byte[16];
                 byte[] decrypted = new byte[payloadSize];
 
-                // Warm-up iteration
+                // Warm-up iterations: JIT compile span methods and populate pool cache
                 BinaryPrimitives.WriteInt32LittleEndian(nonce.AsSpan(0, 4), threadId);
                 BinaryPrimitives.WriteInt32LittleEndian(nonce.AsSpan(4, 4), 9999);
-                cipher.Encrypt(plaintext, aad, nonce, ciphertext, tag);
-                bool warmOk = cipher.Decrypt(ciphertext, aad, nonce, tag, decrypted);
-                Assert.True(warmOk);
+                for (int w = 0; w < 3; w++)
+                {
+                    cipher.Encrypt(plaintext.AsSpan(), aad.AsSpan(), nonce.AsSpan(), ciphertext.AsSpan(), tag.AsSpan());
+                    bool warmOk = cipher.Decrypt(ciphertext.AsSpan(), aad.AsSpan(), nonce.AsSpan(), tag.AsSpan(), decrypted.AsSpan());
+                    Assert.True(warmOk);
+                }
                 Assert.True(plaintext.AsSpan().SequenceEqual(decrypted));
 
                 for (int iter = 0; iter < 10; iter++)
