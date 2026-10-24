@@ -517,6 +517,7 @@ public class Challenger2M6ConcurrencyStressTests
 
         var readyEvent = new CountdownEvent(concurrency);
         var startEvent = new ManualResetEventSlim(false);
+        var warmupBarrier = new Barrier(concurrency);
         var threads = new Thread[concurrency];
 
         for (int t = 0; t < concurrency; t++)
@@ -533,12 +534,15 @@ public class Challenger2M6ConcurrencyStressTests
                     readyEvent.Signal();
                     startEvent.Wait();
 
-                    // Concurrent warm-up across all 24 threads: JIT and pool cache population
-                    for (int w = 0; w < 3; w++)
+                    // Concurrent warm-up across all threads: JIT, pool cache, and CLR sync structures
+                    for (int w = 0; w < 10; w++)
                     {
                         Blake3Hasher.Hash(threadInput.AsSpan(), threadOutput.AsSpan());
                     }
                     Assert.True(expectedHash.AsSpan().SequenceEqual(threadOutput));
+
+                    // Barrier ensures all threads have completed warm-up before measuring steady state
+                    warmupBarrier.SignalAndWait();
 
                     // Steady-state measurement: zero heap allocations
                     for (int iter = 0; iter < 10; iter++)
@@ -592,67 +596,94 @@ public class Challenger2M6ConcurrencyStressTests
         byte[] key = new byte[32];
         RandomNumberGenerator.Fill(key);
 
-        Parallel.For(0, concurrency, new ParallelOptions { MaxDegreeOfParallelism = concurrency }, threadId =>
+        var readyEvent = new CountdownEvent(concurrency);
+        var startEvent = new ManualResetEventSlim(false);
+        var warmupBarrier = new Barrier(concurrency);
+        var threads = new Thread[concurrency];
+
+        for (int t = 0; t < concurrency; t++)
         {
-            try
+            int threadId = t;
+            threads[t] = new Thread(() =>
             {
-                using var cipher = new Aes256GcmCipher(key);
-                byte[] plaintext = new byte[payloadSize];
-                for (int i = 0; i < payloadSize; i++) plaintext[i] = (byte)((threadId * 19 + i) & 0xFF);
-                byte[] aad = new byte[32];
-                for (int i = 0; i < 32; i++) aad[i] = (byte)(i ^ threadId);
-                byte[] nonce = new byte[12];
-                byte[] ciphertext = new byte[payloadSize];
-                byte[] tag = new byte[16];
-                byte[] decrypted = new byte[payloadSize];
-
-                // Warm-up iterations: JIT compile span methods and populate pool cache
-                BinaryPrimitives.WriteInt32LittleEndian(nonce.AsSpan(0, 4), threadId);
-                BinaryPrimitives.WriteInt32LittleEndian(nonce.AsSpan(4, 4), 9999);
-                for (int w = 0; w < 3; w++)
+                try
                 {
-                    cipher.Encrypt(plaintext.AsSpan(), aad.AsSpan(), nonce.AsSpan(), ciphertext.AsSpan(), tag.AsSpan());
-                    bool warmOk = cipher.Decrypt(ciphertext.AsSpan(), aad.AsSpan(), nonce.AsSpan(), tag.AsSpan(), decrypted.AsSpan());
-                    Assert.True(warmOk);
-                }
-                Assert.True(plaintext.AsSpan().SequenceEqual(decrypted));
+                    using var cipher = new Aes256GcmCipher(key);
+                    byte[] plaintext = new byte[payloadSize];
+                    for (int i = 0; i < payloadSize; i++) plaintext[i] = (byte)((threadId * 19 + i) & 0xFF);
+                    byte[] aad = new byte[32];
+                    for (int i = 0; i < 32; i++) aad[i] = (byte)(i ^ threadId);
+                    byte[] nonce = new byte[12];
+                    byte[] ciphertext = new byte[payloadSize];
+                    byte[] tag = new byte[16];
+                    byte[] decrypted = new byte[payloadSize];
 
-                for (int iter = 0; iter < 10; iter++)
-                {
+                    readyEvent.Signal();
+                    startEvent.Wait();
+
+                    // Warm-up iterations: JIT compile span methods and populate pool cache across all threads
                     BinaryPrimitives.WriteInt32LittleEndian(nonce.AsSpan(0, 4), threadId);
-                    BinaryPrimitives.WriteInt32LittleEndian(nonce.AsSpan(4, 4), iter);
-
-                    long before = GC.GetAllocatedBytesForCurrentThread();
-
-                    cipher.Encrypt(plaintext.AsSpan(), aad.AsSpan(), nonce.AsSpan(), ciphertext.AsSpan(), tag.AsSpan());
-                    bool ok = cipher.Decrypt(ciphertext.AsSpan(), aad.AsSpan(), nonce.AsSpan(), tag.AsSpan(), decrypted.AsSpan());
-
-                    long after = GC.GetAllocatedBytesForCurrentThread();
-                    long allocated = after - before;
-
-                    if (allocated != 0)
+                    BinaryPrimitives.WriteInt32LittleEndian(nonce.AsSpan(4, 4), 9999);
+                    for (int w = 0; w < 10; w++)
                     {
-                        throw new InvalidOperationException(
-                            $"AesGcm calling thread {threadId} allocated {allocated} bytes on steady-state hot path at iter {iter}.");
+                        cipher.Encrypt(plaintext.AsSpan(), aad.AsSpan(), nonce.AsSpan(), ciphertext.AsSpan(), tag.AsSpan());
+                        bool warmOk = cipher.Decrypt(ciphertext.AsSpan(), aad.AsSpan(), nonce.AsSpan(), tag.AsSpan(), decrypted.AsSpan());
+                        Assert.True(warmOk);
+                    }
+                    Assert.True(plaintext.AsSpan().SequenceEqual(decrypted));
+
+                    // Barrier ensures all threads have completed warm-up before measuring steady state
+                    warmupBarrier.SignalAndWait();
+
+                    for (int iter = 0; iter < 10; iter++)
+                    {
+                        BinaryPrimitives.WriteInt32LittleEndian(nonce.AsSpan(0, 4), threadId);
+                        BinaryPrimitives.WriteInt32LittleEndian(nonce.AsSpan(4, 4), iter);
+
+                        long before = GC.GetAllocatedBytesForCurrentThread();
+
+                        cipher.Encrypt(plaintext.AsSpan(), aad.AsSpan(), nonce.AsSpan(), ciphertext.AsSpan(), tag.AsSpan());
+                        bool ok = cipher.Decrypt(ciphertext.AsSpan(), aad.AsSpan(), nonce.AsSpan(), tag.AsSpan(), decrypted.AsSpan());
+
+                        long after = GC.GetAllocatedBytesForCurrentThread();
+                        long allocated = after - before;
+
+                        if (allocated != 0)
+                        {
+                            throw new InvalidOperationException(
+                                $"AesGcm calling thread {threadId} allocated {allocated} bytes on steady-state hot path at iter {iter}.");
+                        }
+
+                        Assert.True(ok, $"Decryption failed on thread {threadId} iter {iter}.");
+                        Assert.True(plaintext.AsSpan().SequenceEqual(decrypted),
+                            $"Plaintext mismatch on thread {threadId} iter {iter}.");
                     }
 
-                    Assert.True(ok, $"Decryption failed on thread {threadId} iter {iter}.");
-                    Assert.True(plaintext.AsSpan().SequenceEqual(decrypted),
-                        $"Plaintext mismatch on thread {threadId} iter {iter}.");
+                    // Adversarial check: tamper with tag
+                    tag[0] ^= 0xEE;
+                    decrypted.AsSpan().Fill(0x55);
+                    bool badTagOk = cipher.Decrypt(ciphertext, aad, nonce, tag, decrypted);
+                    Assert.False(badTagOk);
+                    Assert.All(decrypted, b => Assert.Equal(0, b));
                 }
-
-                // Adversarial check: tamper with tag
-                tag[0] ^= 0xEE;
-                decrypted.AsSpan().Fill(0x55);
-                bool badTagOk = cipher.Decrypt(ciphertext, aad, nonce, tag, decrypted);
-                Assert.False(badTagOk);
-                Assert.All(decrypted, b => Assert.Equal(0, b));
-            }
-            catch (Exception ex)
+                catch (Exception ex)
+                {
+                    exceptions.Add(ex);
+                }
+            })
             {
-                exceptions.Add(ex);
-            }
-        });
+                IsBackground = true
+            };
+            threads[t].Start();
+        }
+
+        readyEvent.Wait();
+        startEvent.Set();
+
+        for (int t = 0; t < concurrency; t++)
+        {
+            threads[t].Join();
+        }
 
         Assert.Empty(exceptions);
     }
