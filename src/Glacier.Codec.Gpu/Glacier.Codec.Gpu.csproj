@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>preview</LangVersion>
+    <TieredPGO>true</TieredPGO>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;CS8981;SYSLIB5003</NoWarn>
+
+    <!-- Native AOT & Trimming Compliance -->
+    <PublishAot>true</PublishAot>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableSingleFileAnalyzer>true</EnableSingleFileAnalyzer>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+
+    <!-- NuGet Package Metadata -->
+    <PackageId>Glacier.Codec.Gpu</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>Ian Cowley</Authors>
+    <Company>Glacier High-Performance Ecosystem</Company>
+    <Description>Hardware-accelerated GPU cryptographic hashing and parallel nonce search engine for Glacier.Codec. Executes bare-metal CUDA PTX assembly directly via nvcuda.dll without CUDA Toolkit dependencies.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/ian-cowley/Glacier.Codec</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/ian-cowley/Glacier.Codec.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>gpu;cuda;ptx;cryptography;blake3;sha256;hashing;mining;proof-of-work;net10;glacier</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Glacier.Codec\Glacier.Codec.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Shaders\*.ptx" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Glacier.Codec.Gpu.Tests" />
+  </ItemGroup>
+</Project>

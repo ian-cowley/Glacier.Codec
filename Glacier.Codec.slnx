@@ -1,9 +1,12 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/Glacier.Codec/Glacier.Codec.csproj" />
+    <Project Path="src/Glacier.Codec.Gpu/Glacier.Codec.Gpu.csproj" />
+    <Project Path="src/Glacier.Codec.Gpu.Cli/Glacier.Codec.Gpu.Cli.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Glacier.Codec.Tests/Glacier.Codec.Tests.csproj" />
+    <Project Path="tests/Glacier.Codec.Gpu.Tests/Glacier.Codec.Gpu.Tests.csproj" />
   </Folder>
   <Folder Name="/benchmarks/">
     <Project Path="benchmarks/Glacier.Codec.Benchmarks/Glacier.Codec.Benchmarks.csproj" />
