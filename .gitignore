@@ -2,6 +2,8 @@
 [Bb]in/
 [Oo]bj/
 [Oo]ut/
+packages/
+*.nupkg
 
 ## User Secrets & App Settings
 secrets.json

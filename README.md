@@ -7,6 +7,8 @@ FRAMEWORK TARGET: C# .NET 10.0 / Native AOT / Pure Managed & Unmanaged Intrinsic
 ================================================================================
 -->
 
+![Glacier.Codec Banner](assets/banner.jpg)
+
 # Glacier.Codec
 
 ```
@@ -25,12 +27,13 @@ FRAMEWORK TARGET: C# .NET 10.0 / Native AOT / Pure Managed & Unmanaged Intrinsic
 ---
 
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4?style=flat&logo=dotnet)](https://dotnet.microsoft.com/)
+[![NuGet Version](https://img.shields.io/nuget/v/Glacier.Codec.svg)](https://www.nuget.org/packages/Glacier.Codec/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Native AOT](https://img.shields.io/badge/Native%20AOT-Compatible-success)](https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/)
 [![Zero Allocation](https://img.shields.io/badge/Hot%20Path-0%20Heap%20Allocations-brightgreen)](#hardware-benchmarks)
 [![Security: Zero Secrets](https://img.shields.io/badge/Security-0%20Secrets%20Verified-brightgreen)](scripts/security_check.py)
+[![Website](https://img.shields.io/badge/Website-glaciersoftware.dev-66fcf1.svg)](https://glaciersoftware.dev/)
 [![Fleet Verified](https://img.shields.io/badge/Physical%20Fleet-Verified-blue)](#hardware-benchmarks)
-[![Glacier Forge Hub](https://img.shields.io/badge/Ecosystem-Glacier%20Forge-blueviolet)](https://glaciersoftware.dev)
 
 ---
 
