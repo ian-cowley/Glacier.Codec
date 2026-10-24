@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>preview</LangVersion>
+    <TieredPGO>true</TieredPGO>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;CS8981;SYSLIB5003</NoWarn>
+
+    <!-- Native AOT & Trimming Compliance -->
+    <PublishAot>true</PublishAot>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableSingleFileAnalyzer>true</EnableSingleFileAnalyzer>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+
+    <!-- NuGet Package Metadata -->
+    <PackageId>Glacier.Codec</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>Ian Cowley</Authors>
+    <Company>Glacier High-Performance Ecosystem</Company>
+    <Description>Enterprise ultra-high-throughput cryptographic and compression library in pure C# .NET 10 with Native AOT, hardware intrinsics (AVX-512, VAES, SHA-NI, ARMv8 Crypto), and GPU compute shader acceleration.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/ian-cowley/Glacier.Codec</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/ian-cowley/Glacier.Codec.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>cryptography;blake3;sha256;xxhash3;aes256-gcm;chacha20-poly1305;argon2id;ml-kem;kyber;lz4;zstd;avx512;vaes;sha-ni;aot;net10;glacier</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" Condition="Exists('..\..\README.md')" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Glacier.Codec.Tests" />
+    <InternalsVisibleTo Include="Glacier.Codec.Benchmarks" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
+    <PackageReference Include="Vortice.Direct3D12" Version="3.8.3" />
+  </ItemGroup>
+</Project>

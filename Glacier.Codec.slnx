@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Glacier.Codec/Glacier.Codec.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Glacier.Codec.Tests/Glacier.Codec.Tests.csproj" />
+  </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/Glacier.Codec.Benchmarks/Glacier.Codec.Benchmarks.csproj" />
+  </Folder>
+</Solution>

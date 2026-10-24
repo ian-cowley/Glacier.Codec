@@ -1,0 +1,35 @@
+name: Build & Test
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET 10
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Security Check
+      shell: pwsh
+      run: |
+        python scripts/security_check.py .
+
+    - name: Restore Dependencies
+      run: dotnet restore Glacier.Codec.slnx
+
+    - name: Build Release
+      run: dotnet build Glacier.Codec.slnx -c Release --no-restore
+
+    - name: Run Tests
+      run: dotnet test tests/Glacier.Codec.Tests/Glacier.Codec.Tests.csproj -c Release --no-build --verbosity normal
+
+    - name: Native AOT Publish Test
+      run: dotnet publish src/Glacier.Codec/Glacier.Codec.csproj -c Release -r win-x64 /p:TreatWarningsAsErrors=true
