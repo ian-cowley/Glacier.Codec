@@ -22,7 +22,14 @@ public class GpuD3D12Tests
     {
         if (!OperatingSystem.IsWindows()) return;
 
-        using var factory = Vortice.DXGI.DXGI.CreateDXGIFactory1<Vortice.DXGI.IDXGIFactory4>();
+        using var factory = Vortice.DXGI.DXGI.CreateDXGIFactory1<Vortice.DXGI.IDXGIFactory6>();
+        for (uint i = 0; factory.EnumAdapterByGpuPreference(i, Vortice.DXGI.GpuPreference.MinimumPower, out Vortice.DXGI.IDXGIAdapter1 a).Success; i++)
+        {
+            var d = a.Description1;
+            _output.WriteLine($"[MinPower Adapter #{i}] '{d.Description}' (VendorId: 0x{d.VendorId:X4}, DedicatedVRAM: {d.DedicatedVideoMemory})");
+            a.Dispose();
+        }
+
         for (uint i = 0; factory.EnumAdapters1(i, out Vortice.DXGI.IDXGIAdapter1 a).Success; i++)
         {
             var d = a.Description1;
