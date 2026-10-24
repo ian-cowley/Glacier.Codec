@@ -32,11 +32,18 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
+    <PackageReference Include="Vortice.Direct3D12" Version="3.8.3" />
+    <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Glacier.Codec\Glacier.Codec.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="Shaders\*.ptx" />
+    <EmbeddedResource Include="Shaders\*.hlsl" />
   </ItemGroup>
 
   <ItemGroup>
