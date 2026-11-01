@@ -16,9 +16,9 @@ jobs:
     permissions:
       contents: write
       packages: write
+      id-token: write
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
-      NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
@@ -48,14 +48,23 @@ jobs:
       - name: Pack NuGet Package
         run: dotnet pack src/Glacier.Codec/Glacier.Codec.csproj --configuration Release --no-build --output packages
 
+      - name: NuGet login (Trusted Publishing OIDC)
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: spuriousbugfix
+
       - name: Publish to nuget.org
-        if: env.NUGET_API_KEY != '' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/'))
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')
         shell: pwsh
+        env:
+          NUGET_OIDC_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
         run: |
           $pkgs = Get-ChildItem -Path "packages" -Filter "*.nupkg"
           if (-not $pkgs) { throw "No .nupkg files found in packages directory." }
           foreach ($pkg in $pkgs) {
-            dotnet nuget push $pkg.FullName --api-key $env:NUGET_API_KEY --source https://api.nuget.org/v3/index.json --skip-duplicate
+            dotnet nuget push $pkg.FullName --api-key $env:NUGET_OIDC_KEY --source https://api.nuget.org/v3/index.json --skip-duplicate
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
