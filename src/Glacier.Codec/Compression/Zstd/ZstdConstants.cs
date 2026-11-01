@@ -54,8 +54,8 @@ public static class ZstdConstants
     [
         1,  4,  3,  2,  2,  2,  2,  2,  2,  1,  1,  1,  1,  1,  1,  1,
         1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,
-        1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,
-        1, -1, -1, -1, -1
+        1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1, -1, -1,
+       -1, -1, -1, -1, -1
     ];
 
     /// <summary>Predefined normalized distribution for Offsets (AccuracyLog = 5, 29 symbols).</summary>

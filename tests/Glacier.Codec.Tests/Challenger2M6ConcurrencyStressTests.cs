@@ -310,16 +310,14 @@ public class Challenger2M6ConcurrencyStressTests
                     kem.GenerateKeyPair(pk, sk);
                     kem.Encapsulate(pk, ct, ssA);
 
-                    bool decOk = kem.Decapsulate(sk, ct, ssB);
-                    Assert.True(decOk);
+                    kem.Decapsulate(sk, ct, ssB);
                     Assert.True(ssA.AsSpan().SequenceEqual(ssB),
                         $"ML-KEM shared secret mismatch on thread {threadId} iter {iter}.");
 
                     // Implicit rejection: tamper with ciphertext byte
                     ct[ct.Length - 1] ^= 0x01;
                     byte[] ssTampered = new byte[kem.SharedSecretSizeInBytes];
-                    bool rejOk = kem.Decapsulate(sk, ct, ssTampered);
-                    Assert.False(rejOk); // Implicit rejection returns false but populates deterministic pseudorandom fallback secret
+                    kem.Decapsulate(sk, ct, ssTampered);
                     Assert.False(ssA.AsSpan().SequenceEqual(ssTampered));
                 }
             }

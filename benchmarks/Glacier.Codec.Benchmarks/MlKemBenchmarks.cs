@@ -52,9 +52,9 @@ public class MlKemBenchmarks
     }
 
     [Benchmark(Description = "ML-KEM-768 Decapsulate (FIPS 203 Level 3)")]
-    public bool MlKem768_Decaps()
+    public void MlKem768_Decaps()
     {
-        return MlKemEngine.MlKem768.Decapsulate(_sk768, _ct768, _ss768);
+        MlKemEngine.MlKem768.Decapsulate(_sk768, _ct768, _ss768);
     }
 
     [Benchmark(Description = "ML-KEM-1024 KeyGen (FIPS 203 Level 5)")]
@@ -70,8 +70,8 @@ public class MlKemBenchmarks
     }
 
     [Benchmark(Description = "ML-KEM-1024 Decapsulate (FIPS 203 Level 5)")]
-    public bool MlKem1024_Decaps()
+    public void MlKem1024_Decaps()
     {
-        return MlKemEngine.MlKem1024.Decapsulate(_sk1024, _ct1024, _ss1024);
+        MlKemEngine.MlKem1024.Decapsulate(_sk1024, _ct1024, _ss1024);
     }
 }

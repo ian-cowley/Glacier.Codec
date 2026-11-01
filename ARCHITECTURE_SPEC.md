@@ -99,8 +99,8 @@ C4Context
 
 ## 4. Solution Strategy
 
-1. **Hardware-Specific Tiering:** Statically classify host processors into Tier 0 (AVX-512, VAES, SHA-NI), Tier 1 (AVX2, AES-NI), and Tier 2 (Scalar fallback).
-2. **Slab Memory Rental:** Manage memory buffers using a lock-free `UnmanagedSlabPool` to avoid OS page allocations.
+1. **Hardware-Specific Tiering:** Statically classify host processors into Tier 0 (AVX-512, VAES, SHA-NI), Tier 1 (AVX2, AES-NI, ARM64 `Aes`), and Tier 2 (Scalar fallback).
+2. **Deferred Slab Memory Rental:** Manage memory buffers using a lock-free `UnmanagedSlabPool` with pre-warmed shell wrappers and lazy on-demand native page allocation (`0 B` startup native RAM, `0 B` managed GC heap allocation on concurrent rent).
 3. **Carry-Less Polynomial Multiplication:** Compute $GF(2^{128})$ GHASH values using `Pclmulqdq` and `Vpclmulqdq` intrinsics with Karatsuba reduction.
 4. **Parallel Tree Reduction:** Process BLAKE3 chunks across 16-way vector registers and merge hashes using stack-allocated structures.
 5. **Multi-Block Framing:** Divide large Zstandard streams into standard $\le 128\text{ KB}$ blocks per RFC 8878 Section 3.1.1.2.3.
@@ -210,8 +210,8 @@ Authentication tag comparisons execute through `CryptographicOperations.FixedTim
 
 ## 10. Quality Scenarios
 
-1. **Extreme Throughput Scenario:** A streaming ingest pipeline encrypts 10 GB of data. The engine uses 8-way VAES pipelining to maintain $>11\text{ GB/s}$ without triggering GC collections.
-2. **Side-Channel Rejection Scenario:** An adversary transmits a modified authentication tag. The engine rejects the frame using `FixedTimeEquals` and scrubs the output buffer immediately.
+1. **Extreme Throughput Scenario:** A streaming ingest pipeline encrypts 10 GB of data. The engine uses 8-way VAES pipelining (or ARM64 `Aes` hardware block dispatch) to maintain $>11\text{ GB/s}$ without triggering GC collections.
+2. **Side-Channel & Forgery Rejection Scenario:** An adversary transmits a modified authentication tag. On parallel payloads ($\ge 256\text{ KB}$), `AesGcmParallelEngine` completes full parallel GHASH tag verification in constant time (`FixedTimeEquals`) *before* executing CTR decryption, guaranteeing zero unauthenticated plaintext exposure in caller buffers with `0 B` heap allocation; single-threaded decryption zeroes the destination buffer immediately upon tag mismatch.
 
 ---
 

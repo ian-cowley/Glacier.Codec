@@ -93,7 +93,7 @@ namespace Glacier.Codec.Cryptography.PostQuantum
 
         void GenerateKeyPair(Span<byte> publicKey, Span<byte> secretKey);
         void Encapsulate(ReadOnlySpan<byte> publicKey, Span<byte> ciphertext, Span<byte> sharedSecret);
-        bool Decapsulate(ReadOnlySpan<byte> secretKey, ReadOnlySpan<byte> ciphertext, Span<byte> sharedSecret);
+        void Decapsulate(ReadOnlySpan<byte> secretKey, ReadOnlySpan<byte> ciphertext, Span<byte> sharedSecret);
     }
 }
 

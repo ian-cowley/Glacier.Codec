@@ -15,9 +15,10 @@ internal static class Polyvec
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static ushort Compress(ushort x, int d)
     {
-        // Formula: ((x << (d + 1)) + 3329) / 6658 mod 2^d
-        uint num = (uint)((x << (d + 1)) + Q);
-        uint res = num / (2u * (uint)Q);
+        // Constant-time Barrett division: ((x << (d + 1)) + 3329) / 6658 mod 2^d
+        // ceil(2^37 / 6658) = 20,642,679; exact for all x in [0, 3328] and d in {1, 4, 5, 10, 11}.
+        uint num = ((uint)x << (d + 1)) + (uint)Q;
+        uint res = (uint)(((ulong)num * 20_642_679UL) >> 37);
         return (ushort)(res & ((1u << d) - 1u));
     }
 
@@ -233,6 +234,24 @@ internal static class Polyvec
             poly[2 * i + 0] = (short)c0;
             poly[2 * i + 1] = (short)c1;
         }
+    }
+
+    /// <summary>
+    /// Constant-time FIPS 203 Section 7.2 modulus check across a 384-byte encoded polynomial.
+    /// Returns true iff every decoded 12-bit coefficient is strictly in [0, Q - 1].
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool ValidateModulus12(ReadOnlySpan<byte> source)
+    {
+        uint invalid = 0;
+        for (int i = 0; i < 128; i++)
+        {
+            int c0 = source[3 * i + 0] | ((source[3 * i + 1] & 0x0F) << 8);
+            int c1 = (source[3 * i + 1] >> 4) | (source[3 * i + 2] << 4);
+            invalid |= (uint)((Q - 1 - c0) >> 31);
+            invalid |= (uint)((Q - 1 - c1) >> 31);
+        }
+        return invalid == 0;
     }
 
     /// <summary>

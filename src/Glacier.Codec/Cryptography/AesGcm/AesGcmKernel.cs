@@ -332,6 +332,34 @@ internal static unsafe class AesGcmKernel
                 offset += 64;
             }
         }
+        else if (CpuCapabilities.IsArm64 && CpuCapabilities.HasArm64Aes)
+        {
+            Span<byte> cb = stackalloc byte[16];
+
+            // 4-way pipelined ARMv8 hardware AES execution (64 bytes per iteration)
+            while (offset + 64 <= length)
+            {
+                uint c0 = BinaryPrimitives.ReadUInt32BigEndian(counter.Slice(12, 4));
+                counter.Slice(0, 12).CopyTo(cb.Slice(0, 12));
+
+                BinaryPrimitives.WriteUInt32BigEndian(cb.Slice(12, 4), c0 + 0);
+                Vector128<byte> b0 = AesGcmKernelArm64.EncryptBlock(rkVec, Vector128.Create(cb));
+                BinaryPrimitives.WriteUInt32BigEndian(cb.Slice(12, 4), c0 + 1);
+                Vector128<byte> b1 = AesGcmKernelArm64.EncryptBlock(rkVec, Vector128.Create(cb));
+                BinaryPrimitives.WriteUInt32BigEndian(cb.Slice(12, 4), c0 + 2);
+                Vector128<byte> b2 = AesGcmKernelArm64.EncryptBlock(rkVec, Vector128.Create(cb));
+                BinaryPrimitives.WriteUInt32BigEndian(cb.Slice(12, 4), c0 + 3);
+                Vector128<byte> b3 = AesGcmKernelArm64.EncryptBlock(rkVec, Vector128.Create(cb));
+
+                (Vector128.Load(pSrc + offset + 0)  ^ b0).Store(pDst + offset + 0);
+                (Vector128.Load(pSrc + offset + 16) ^ b1).Store(pDst + offset + 16);
+                (Vector128.Load(pSrc + offset + 32) ^ b2).Store(pDst + offset + 32);
+                (Vector128.Load(pSrc + offset + 48) ^ b3).Store(pDst + offset + 48);
+
+                BinaryPrimitives.WriteUInt32BigEndian(counter.Slice(12, 4), c0 + 4);
+                offset += 64;
+            }
+        }
 
         // Single block loop & partial tail
         Span<byte> keystream = stackalloc byte[16];
@@ -340,6 +368,11 @@ internal static unsafe class AesGcmKernel
             if (CpuCapabilities.IsX86_64 && CpuCapabilities.HasAesNi)
             {
                 Vector128<byte> b = AesGcmKernelAesNi.EncryptBlock(rkVec, Vector128.Create(counter));
+                b.CopyTo(keystream);
+            }
+            else if (CpuCapabilities.IsArm64 && CpuCapabilities.HasArm64Aes)
+            {
+                Vector128<byte> b = AesGcmKernelArm64.EncryptBlock(rkVec, Vector128.Create(counter));
                 b.CopyTo(keystream);
             }
             else

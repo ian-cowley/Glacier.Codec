@@ -75,8 +75,7 @@ public class MlKemTests
 
         // Decapsulate
         byte[] decapsSs = new byte[32];
-        bool success = MlKemEngine.MlKem768.Decapsulate(dk, ct, decapsSs);
-        Assert.True(success);
+        MlKemEngine.MlKem768.Decapsulate(dk, ct, decapsSs);
         Assert.True(ss.AsSpan().SequenceEqual(decapsSs));
     }
 
@@ -122,9 +121,8 @@ public class MlKemTests
         byte[] ssB = new byte[kem.SharedSecretSizeInBytes];
 
         kem.Encapsulate(pk, ct, ssA);
-        bool success = kem.Decapsulate(sk, ct, ssB);
+        kem.Decapsulate(sk, ct, ssB);
 
-        Assert.True(success);
         Assert.True(ssA.AsSpan().SequenceEqual(ssB));
     }
 
@@ -142,9 +140,8 @@ public class MlKemTests
         byte[] ssB = new byte[kem.SharedSecretSizeInBytes];
 
         kem.Encapsulate(pk, ct, ssA);
-        bool success = kem.Decapsulate(sk, ct, ssB);
+        kem.Decapsulate(sk, ct, ssB);
 
-        Assert.True(success);
         Assert.True(ssA.AsSpan().SequenceEqual(ssB));
     }
 
@@ -166,12 +163,8 @@ public class MlKemTests
         byte[] ssReject1 = new byte[32];
         byte[] ssReject2 = new byte[32];
 
-        bool success1 = kem.Decapsulate(sk, ct, ssReject1);
-        bool success2 = kem.Decapsulate(sk, ct, ssReject2);
-
-        // Must fail with false
-        Assert.False(success1);
-        Assert.False(success2);
+        kem.Decapsulate(sk, ct, ssReject1);
+        kem.Decapsulate(sk, ct, ssReject2);
 
         // Reject key must not equal real key
         Assert.False(ssReal.AsSpan().SequenceEqual(ssReject1));
@@ -191,8 +184,8 @@ public class MlKemTests
         byte[] zeroCt = new byte[kem.CiphertextSizeInBytes];
         byte[] ss = new byte[32];
 
-        bool success = kem.Decapsulate(sk, zeroCt, ss);
-        Assert.False(success);
+        kem.Decapsulate(sk, zeroCt, ss);
+        Assert.False(ss.AsSpan().SequenceEqual(new byte[32]), "Reject key must be non-zero pseudo-random value.");
     }
 
     [Fact]
@@ -221,8 +214,7 @@ public class MlKemTests
             Assert.Equal(kem.SecretKeySizeInBytes, keyPair.SecretKey.Length);
 
             keyPair.Encapsulate(ct, ssA);
-            bool success = keyPair.Decapsulate(ct, ssB);
-            Assert.True(success);
+            keyPair.Decapsulate(ct, ssB);
             Assert.True(ssA.AsSpan().SequenceEqual(ssB));
         }
     }
@@ -243,8 +235,7 @@ public class MlKemTests
             byte[] ssB = new byte[32];
 
             kem.Encapsulate(pk, ct, ssA);
-            bool ok = kem.Decapsulate(sk, ct, ssB);
-            Assert.True(ok);
+            kem.Decapsulate(sk, ct, ssB);
             Assert.True(ssA.AsSpan().SequenceEqual(ssB));
         });
     }

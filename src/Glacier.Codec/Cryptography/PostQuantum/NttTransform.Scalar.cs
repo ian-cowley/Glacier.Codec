@@ -16,20 +16,24 @@ internal static class NttTransformScalar
     public static short FieldAdd(short a, short b)
     {
         int sum = a + b;
-        return (short)(sum >= Q ? sum - Q : sum);
+        int diff = sum - Q;
+        return (short)(sum - (Q & ~(diff >> 31)));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static short FieldSub(short a, short b)
     {
         int diff = a - b;
-        return (short)(diff < 0 ? diff + Q : diff);
+        return (short)(diff + (Q & (diff >> 31)));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static short FieldMul(short a, short b)
     {
-        return (short)(((int)a * (int)b) % Q);
+        // Constant-time Barrett reduction modulo Q = 3329: ceil(2^36 / 3329) = 20,642,679.
+        uint prod = (uint)a * (uint)b;
+        uint q = (uint)(((ulong)prod * 20_642_679UL) >> 36);
+        return (short)(prod - q * (uint)Q);
     }
 
     /// <summary>

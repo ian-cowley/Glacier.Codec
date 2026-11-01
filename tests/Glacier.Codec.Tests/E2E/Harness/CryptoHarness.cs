@@ -316,7 +316,7 @@ namespace Glacier.Codec.Cryptography.PostQuantum
             sharedSecret.Slice(0, 32).CopyTo(ciphertext.Slice(32, 32));
         }
 
-        public bool Decapsulate(ReadOnlySpan<byte> secretKey, ReadOnlySpan<byte> ciphertext, Span<byte> sharedSecret)
+        public void Decapsulate(ReadOnlySpan<byte> secretKey, ReadOnlySpan<byte> ciphertext, Span<byte> sharedSecret)
         {
             if (secretKey.Length < SecretKeySizeInBytes) throw new ArgumentException("Secret key buffer too small.");
             if (ciphertext.Length < CiphertextSizeInBytes) throw new ArgumentException("Ciphertext buffer too small.");
@@ -336,7 +336,7 @@ namespace Glacier.Codec.Cryptography.PostQuantum
             if (matches)
             {
                 computedSs.CopyTo(sharedSecret.Slice(0, 32));
-                return true;
+                return;
             }
 
             // Constant-time implicit rejection: derive reject secret from sk tail and ciphertext
@@ -344,7 +344,6 @@ namespace Glacier.Codec.Cryptography.PostQuantum
             rejectHash.AppendData(secretKey.Slice(SecretKeySizeInBytes - 32, 32));
             rejectHash.AppendData(ciphertext.Slice(0, 32));
             rejectHash.GetHashAndReset(sharedSecret.Slice(0, 32));
-            return false;
         }
     }
 }

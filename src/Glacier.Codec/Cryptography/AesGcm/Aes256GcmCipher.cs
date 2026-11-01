@@ -4,6 +4,7 @@ using System;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using Glacier.Codec.Cryptography;
+using Glacier.Codec.Hardware;
 using Glacier.Codec.Memory;
 
 /// <summary>
@@ -59,7 +60,7 @@ public sealed class Aes256GcmCipher : IAeadCipher
         if (ciphertext.Length < plaintext.Length)
             throw new ArgumentException($"Ciphertext destination buffer too small ({ciphertext.Length} bytes) for plaintext ({plaintext.Length} bytes).", nameof(ciphertext));
 
-        if (plaintext.Length >= 256 * 1024 && Environment.ProcessorCount > 1)
+        if (plaintext.Length >= 256 * 1024 && Environment.ProcessorCount > 1 && CpuCapabilities.IsX86_64 && CpuCapabilities.HasPclmulqdq)
         {
             AesGcmParallelEngine.EncryptParallel(
                 _expandedKeys!.ReadOnlySpan,
@@ -98,7 +99,7 @@ public sealed class Aes256GcmCipher : IAeadCipher
         if (plaintext.Length < ciphertext.Length)
             throw new ArgumentException($"Plaintext destination buffer too small ({plaintext.Length} bytes) for ciphertext ({ciphertext.Length} bytes).", nameof(plaintext));
 
-        if (ciphertext.Length >= 256 * 1024 && Environment.ProcessorCount > 1)
+        if (ciphertext.Length >= 256 * 1024 && Environment.ProcessorCount > 1 && CpuCapabilities.IsX86_64 && CpuCapabilities.HasPclmulqdq)
         {
             return AesGcmParallelEngine.DecryptParallel(
                 _expandedKeys!.ReadOnlySpan,

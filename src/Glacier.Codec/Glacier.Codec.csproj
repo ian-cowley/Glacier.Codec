@@ -10,7 +10,6 @@
     <NoWarn>$(NoWarn);CS1591;CS8981;SYSLIB5003</NoWarn>
 
     <!-- Native AOT & Trimming Compliance -->
-    <PublishAot>true</PublishAot>
     <IsAotCompatible>true</IsAotCompatible>
     <IsTrimmable>true</IsTrimmable>
     <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
@@ -38,10 +37,5 @@
   <ItemGroup>
     <InternalsVisibleTo Include="Glacier.Codec.Tests" />
     <InternalsVisibleTo Include="Glacier.Codec.Benchmarks" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
-    <PackageReference Include="Vortice.Direct3D12" Version="3.8.3" />
   </ItemGroup>
 </Project>

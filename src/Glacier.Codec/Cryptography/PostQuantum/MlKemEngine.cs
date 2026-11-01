@@ -1,6 +1,7 @@
 namespace Glacier.Codec.Cryptography.PostQuantum;
 
 using System;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using Glacier.Codec.Memory;
 
@@ -37,7 +38,7 @@ public abstract class MlKemEngine : IKeyEncapsulationMechanism, IDisposable
 
     public abstract void GenerateKeyPair(Span<byte> publicKey, Span<byte> secretKey);
     public abstract void Encapsulate(ReadOnlySpan<byte> publicKey, Span<byte> ciphertext, Span<byte> sharedSecret);
-    public abstract bool Decapsulate(ReadOnlySpan<byte> secretKey, ReadOnlySpan<byte> ciphertext, Span<byte> sharedSecret);
+    public abstract void Decapsulate(ReadOnlySpan<byte> secretKey, ReadOnlySpan<byte> ciphertext, Span<byte> sharedSecret);
 
     /// <summary>Generates a managed key pair container with secure memory for the secret key.</summary>
     public MlKemKeyPair CreateKeyPair()
@@ -46,6 +47,66 @@ public abstract class MlKemEngine : IKeyEncapsulationMechanism, IDisposable
         byte[] pk = new byte[PublicKeySizeInBytes];
         GenerateKeyPair(pk, sk.Span);
         return new MlKemKeyPair(this, pk, sk);
+    }
+
+    /// <summary>
+    /// FIPS 203 Section 7.2 Encapsulation Key Validation: checks exact byte length and ensures all
+    /// encoded 12-bit polynomial coefficients lie strictly in [0, 3328].
+    /// </summary>
+    protected void ValidateEncapsulationKey(ReadOnlySpan<byte> publicKey)
+    {
+        if (publicKey.Length != PublicKeySizeInBytes)
+        {
+            throw new ArgumentException($"Encapsulation key must be {PublicKeySizeInBytes} bytes.", nameof(publicKey));
+        }
+
+        bool valid = true;
+        for (int i = 0; i < RankK; i++)
+        {
+            valid &= Polyvec.ValidateModulus12(publicKey.Slice(384 * i, 384));
+        }
+
+        if (!valid)
+        {
+            throw new CryptographicException("FIPS 203 §7.2 encapsulation key validation failed: polynomial coefficient >= 3329.");
+        }
+    }
+
+    /// <summary>
+    /// FIPS 203 Section 7.3 Decapsulation Key &amp; Ciphertext Input Validation: checks exact byte lengths,
+    /// embedded encapsulation key modulus bounds, and H(ek) == h integrity.
+    /// </summary>
+    protected void ValidateDecapsulationInputs(ReadOnlySpan<byte> secretKey, ReadOnlySpan<byte> ciphertext)
+    {
+        if (secretKey.Length != SecretKeySizeInBytes)
+        {
+            throw new ArgumentException($"Decapsulation key must be {SecretKeySizeInBytes} bytes.", nameof(secretKey));
+        }
+        if (ciphertext.Length != CiphertextSizeInBytes)
+        {
+            throw new ArgumentException($"Ciphertext must be {CiphertextSizeInBytes} bytes.", nameof(ciphertext));
+        }
+
+        int k = RankK;
+        int ekLen = PublicKeySizeInBytes;
+        ReadOnlySpan<byte> ekPke = secretKey.Slice(384 * k, ekLen);
+        ReadOnlySpan<byte> hStored = secretKey.Slice(384 * k + ekLen, 32);
+
+        bool ekValid = true;
+        for (int i = 0; i < k; i++)
+        {
+            ekValid &= Polyvec.ValidateModulus12(ekPke.Slice(384 * i, 384));
+        }
+
+        Span<byte> hComputed = stackalloc byte[32];
+        KeccakSponge.Sha3_256(ekPke, hComputed);
+        bool hashValid = CryptographicOperations.FixedTimeEquals(hComputed, hStored);
+        CryptographicOperations.ZeroMemory(hComputed);
+
+        if (!ekValid || !hashValid)
+        {
+            throw new CryptographicException("FIPS 203 §7.3 decapsulation key validation failed.");
+        }
     }
 
     /// <summary>
@@ -194,8 +255,10 @@ public abstract class MlKemEngine : IKeyEncapsulationMechanism, IDisposable
 
     /// <summary>
     /// FIPS 203 Algorithm 18 (ML-KEM.Decaps_internal): Decapsulates ciphertext with constant-time implicit rejection.
+    /// In accordance with FIPS 203 Section 7.2, decapsulation does NOT return a boolean error flag;
+    /// malformed ciphertexts silently yield a deterministic pseudo-random reject key to prevent CCA2 oracle attacks.
     /// </summary>
-    internal unsafe bool DecapsInternal(
+    internal unsafe void DecapsInternal(
         ReadOnlySpan<byte> secretKey,
         ReadOnlySpan<byte> ciphertext,
         Span<byte> sharedSecret)
@@ -235,9 +298,10 @@ public abstract class MlKemEngine : IKeyEncapsulationMechanism, IDisposable
         Span<byte> cPrime = stackalloc byte[ctLen];
         EncryptPke(ekPke, mPrime, rPrime, cPrime);
 
-        // 5. Branchless implicit rejection check
+        // 5. Constant-time arithmetic implicit rejection mask (zero conditional branches)
         bool match = CryptographicOperations.FixedTimeEquals(ciphertext.Slice(0, ctLen), cPrime);
-        byte mask = (byte)(match ? 0xFF : 0x00);
+        int matchBit = Unsafe.As<bool, byte>(ref match) & 1;
+        byte mask = (byte)(-matchBit);
 
         for (int i = 0; i < 32; i++)
         {
@@ -250,8 +314,6 @@ public abstract class MlKemEngine : IKeyEncapsulationMechanism, IDisposable
         CryptographicOperations.ZeroMemory(krPrime);
         CryptographicOperations.ZeroMemory(kReject);
         CryptographicOperations.ZeroMemory(cPrime);
-
-        return match;
     }
 
     /// <summary>

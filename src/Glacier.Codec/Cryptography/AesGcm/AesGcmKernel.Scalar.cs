@@ -3,10 +3,11 @@ namespace Glacier.Codec.Cryptography.AesGcm;
 using System;
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 
 /// <summary>
-/// Pure constant-time C# scalar kernel for AES-256 block encryption and GF(2^128) GHASH.
-/// Guaranteed zero BCL delegation, zero table lookups in cache-sensitive paths, and fail-secure execution.
+/// Pure C# scalar fallback kernel for AES-256 block encryption and constant-time GF(2^128) GHASH.
+/// Used only when hardware AES (AES-NI / VAES / ARMv8 Crypto) is unavailable; GHASH uses branchless shift-and-XOR.
 /// </summary>
 internal static class AesGcmKernelScalar
 {
@@ -222,6 +223,8 @@ internal static class AesGcmKernelScalar
             destination[14] = (byte)(s12 ^ roundKeys[rkOffset + 14]);
             destination[15] = (byte)(s23 ^ roundKeys[rkOffset + 15]);
         }
+
+        CryptographicOperations.ZeroMemory(state);
     }
 
     /// <summary>

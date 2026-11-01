@@ -39,8 +39,7 @@ public sealed class MlKem768 : MlKemEngine
 
     public override void Encapsulate(ReadOnlySpan<byte> publicKey, Span<byte> ciphertext, Span<byte> sharedSecret)
     {
-        if (publicKey.Length < PublicKeyBytes)
-            throw new ArgumentException("Public key buffer too small.", nameof(publicKey));
+        ValidateEncapsulationKey(publicKey);
         if (ciphertext.Length < CiphertextBytes)
             throw new ArgumentException("Ciphertext buffer too small.", nameof(ciphertext));
         if (sharedSecret.Length < SharedSecretBytes)
@@ -54,16 +53,13 @@ public sealed class MlKem768 : MlKemEngine
         CryptographicOperations.ZeroMemory(m);
     }
 
-    public override bool Decapsulate(ReadOnlySpan<byte> secretKey, ReadOnlySpan<byte> ciphertext, Span<byte> sharedSecret)
+    public override void Decapsulate(ReadOnlySpan<byte> secretKey, ReadOnlySpan<byte> ciphertext, Span<byte> sharedSecret)
     {
-        if (secretKey.Length < SecretKeyBytes)
-            throw new ArgumentException("Secret key buffer too small.", nameof(secretKey));
-        if (ciphertext.Length < CiphertextBytes)
-            throw new ArgumentException("Ciphertext buffer too small.", nameof(ciphertext));
+        ValidateDecapsulationInputs(secretKey, ciphertext);
         if (sharedSecret.Length < SharedSecretBytes)
             throw new ArgumentException("Shared secret buffer too small.", nameof(sharedSecret));
 
-        return DecapsInternal(secretKey, ciphertext, sharedSecret);
+        DecapsInternal(secretKey, ciphertext, sharedSecret);
     }
 
     /// <summary>Deterministic key generation for NIST ACVP KAT test vectors.</summary>
@@ -89,7 +85,7 @@ public sealed class MlKem768 : MlKemEngine
         Span<byte> sharedSecret)
     {
         if (m.Length != 32) throw new ArgumentException("Randomness m must be 32 bytes.", nameof(m));
-        if (publicKey.Length < PublicKeyBytes) throw new ArgumentException("Public key buffer too small.", nameof(publicKey));
+        ValidateEncapsulationKey(publicKey);
         if (ciphertext.Length < CiphertextBytes) throw new ArgumentException("Ciphertext buffer too small.", nameof(ciphertext));
         if (sharedSecret.Length < SharedSecretBytes) throw new ArgumentException("Shared secret buffer too small.", nameof(sharedSecret));
 
@@ -99,5 +95,5 @@ public sealed class MlKem768 : MlKemEngine
     // Static convenience helpers
     public static void GenerateKeys(Span<byte> publicKey, Span<byte> secretKey) => MlKem768.GenerateKeyPair(publicKey, secretKey);
     public static void EncapsulateSecret(ReadOnlySpan<byte> publicKey, Span<byte> ciphertext, Span<byte> sharedSecret) => MlKem768.Encapsulate(publicKey, ciphertext, sharedSecret);
-    public static bool DecapsulateSecret(ReadOnlySpan<byte> secretKey, ReadOnlySpan<byte> ciphertext, Span<byte> sharedSecret) => MlKem768.Decapsulate(secretKey, ciphertext, sharedSecret);
+    public static void DecapsulateSecret(ReadOnlySpan<byte> secretKey, ReadOnlySpan<byte> ciphertext, Span<byte> sharedSecret) => MlKem768.Decapsulate(secretKey, ciphertext, sharedSecret);
 }

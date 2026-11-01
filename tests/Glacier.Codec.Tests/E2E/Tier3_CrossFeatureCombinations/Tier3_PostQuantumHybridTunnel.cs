@@ -36,8 +36,7 @@ public class Tier3_PostQuantumHybridTunnel
 
         // 4. Receiver decapsulates shared secret
         byte[] receiverSecret = new byte[kem.SharedSecretSizeInBytes];
-        bool decapsOk = kem.Decapsulate(sk, ct, receiverSecret);
-        Assert.True(decapsOk);
+        kem.Decapsulate(sk, ct, receiverSecret);
         Assert.Equal(senderSecret, receiverSecret);
 
         // 5. Receiver decrypts payload using decapsulated secret
@@ -69,8 +68,7 @@ public class Tier3_PostQuantumHybridTunnel
         ChaCha20Poly1305Cipher.Encrypt(senderSecret, nonce, payload, encryptedPayload, tag);
 
         byte[] receiverSecret = new byte[kem.SharedSecretSizeInBytes];
-        bool decapsOk = kem.Decapsulate(sk, ct, receiverSecret);
-        Assert.True(decapsOk);
+        kem.Decapsulate(sk, ct, receiverSecret);
 
         byte[] decryptedPayload = new byte[payload.Length];
         bool decryptOk = ChaCha20Poly1305Cipher.Decrypt(receiverSecret, nonce, encryptedPayload, tag, decryptedPayload);

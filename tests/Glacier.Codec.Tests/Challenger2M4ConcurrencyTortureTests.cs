@@ -154,11 +154,7 @@ public class Challenger2M4ConcurrencyTortureTests
                     kem.GenerateKeyPair(pk, sk);
                     kem.Encapsulate(pk, ct, ssA);
 
-                    bool decapsOk = kem.Decapsulate(sk, ct, ssB);
-                    if (!decapsOk)
-                    {
-                        throw new InvalidOperationException($"Thread {threadId} round {r}: Decapsulate returned false!");
-                    }
+                    kem.Decapsulate(sk, ct, ssB);
 
                     if (!ssA.AsSpan().SequenceEqual(ssB))
                     {
@@ -203,11 +199,7 @@ public class Challenger2M4ConcurrencyTortureTests
                     kem.GenerateKeyPair(pk, sk);
                     kem.Encapsulate(pk, ct, ssA);
 
-                    bool decapsOk = kem.Decapsulate(sk, ct, ssB);
-                    if (!decapsOk)
-                    {
-                        throw new InvalidOperationException($"Thread {threadId} round {r}: Decapsulate returned false!");
-                    }
+                    kem.Decapsulate(sk, ct, ssB);
 
                     if (!ssA.AsSpan().SequenceEqual(ssB))
                     {
@@ -258,8 +250,8 @@ public class Challenger2M4ConcurrencyTortureTests
                     if (i % 2 == 0)
                     {
                         // Normal roundtrip
-                        bool ok = kem.Decapsulate(sk, ct, ssB);
-                        if (!ok || !ssA.AsSpan().SequenceEqual(ssB))
+                        kem.Decapsulate(sk, ct, ssB);
+                        if (!ssA.AsSpan().SequenceEqual(ssB))
                         {
                             throw new InvalidOperationException($"Acceptance failure in thread {threadId}");
                         }
@@ -269,11 +261,7 @@ public class Challenger2M4ConcurrencyTortureTests
                     {
                         // Tampered round: flip a bit in ciphertext
                         ct[i % ct.Length] ^= 0x80;
-                        bool ok = kem.Decapsulate(sk, ct, ssB);
-                        if (ok)
-                        {
-                            throw new InvalidOperationException($"Tampered ciphertext was unexpectedly accepted in thread {threadId}!");
-                        }
+                        kem.Decapsulate(sk, ct, ssB);
                         if (ssA.AsSpan().SequenceEqual(ssB))
                         {
                             throw new InvalidOperationException($"Implicit rejection produced real key in thread {threadId}!");
@@ -483,9 +471,8 @@ public class Challenger2M4ConcurrencyTortureTests
             Assert.Equal(0, a2 - b2);
 
             long b3 = GC.GetAllocatedBytesForCurrentThread();
-            bool ok = kem.Decapsulate(sk, ct, ssB);
+            kem.Decapsulate(sk, ct, ssB);
             long a3 = GC.GetAllocatedBytesForCurrentThread();
-            Assert.True(ok);
             Assert.Equal(0, a3 - b3);
         }
     }
@@ -530,9 +517,8 @@ public class Challenger2M4ConcurrencyTortureTests
             Assert.Equal(0, a2 - b2);
 
             long b3 = GC.GetAllocatedBytesForCurrentThread();
-            bool ok = kem.Decapsulate(sk, ct, ssB);
+            kem.Decapsulate(sk, ct, ssB);
             long a3 = GC.GetAllocatedBytesForCurrentThread();
-            Assert.True(ok);
             Assert.Equal(0, a3 - b3);
         }
     }
@@ -572,15 +558,13 @@ public class Challenger2M4ConcurrencyTortureTests
         for (int iter = 0; iter < 10; iter++)
         {
             long b768 = GC.GetAllocatedBytesForCurrentThread();
-            bool ok768 = kem768.Decapsulate(sk768, ct768, rejectSs);
+            kem768.Decapsulate(sk768, ct768, rejectSs);
             long a768 = GC.GetAllocatedBytesForCurrentThread();
-            Assert.False(ok768);
             Assert.Equal(0, a768 - b768);
 
             long b1024 = GC.GetAllocatedBytesForCurrentThread();
-            bool ok1024 = kem1024.Decapsulate(sk1024, ct1024, rejectSs);
+            kem1024.Decapsulate(sk1024, ct1024, rejectSs);
             long a1024 = GC.GetAllocatedBytesForCurrentThread();
-            Assert.False(ok1024);
             Assert.Equal(0, a1024 - b1024);
         }
     }
@@ -636,9 +620,8 @@ public class Challenger2M4ConcurrencyTortureTests
 
         kem.GenerateKeyPair(pk, sk);
         kem.Encapsulate(pk, ct, ssA);
-        bool ok = kem.Decapsulate(sk, ct, ssB);
+        kem.Decapsulate(sk, ct, ssB);
 
-        Assert.True(ok);
         Assert.True(ssA.SequenceEqual(ssB));
     }
 
@@ -703,9 +686,9 @@ public class Challenger2M4ConcurrencyTortureTests
                         byte[] ssB = new byte[32];
 
                         keyPair.Encapsulate(ct, ssA);
-                        bool ok = keyPair.Decapsulate(ct, ssB);
+                        keyPair.Decapsulate(ct, ssB);
 
-                        if (!ok || !ssA.AsSpan().SequenceEqual(ssB))
+                        if (!ssA.AsSpan().SequenceEqual(ssB))
                         {
                             throw new InvalidOperationException($"Thread {threadId} iter {iter} failed shared secret agreement!");
                         }
@@ -739,11 +722,9 @@ public class Challenger2M4ConcurrencyTortureTests
         byte[] ssReject1 = new byte[32];
         byte[] ssReject2 = new byte[32];
 
-        bool ok1 = kem.Decapsulate(sk, ct, ssReject1);
-        bool ok2 = kem.Decapsulate(sk, ct, ssReject2);
+        kem.Decapsulate(sk, ct, ssReject1);
+        kem.Decapsulate(sk, ct, ssReject2);
 
-        Assert.False(ok1);
-        Assert.False(ok2);
         Assert.False(ssReal.AsSpan().SequenceEqual(ssReject1));
         Assert.True(ssReject1.AsSpan().SequenceEqual(ssReject2));
     }

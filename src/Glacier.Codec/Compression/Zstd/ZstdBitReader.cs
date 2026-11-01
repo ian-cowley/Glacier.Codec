@@ -56,7 +56,7 @@ public ref struct ZstdBitReader
     public bool IsFinished => _bitsLeft <= 0 && _bytePos == 0;
 
     /// <summary>
-    /// Reloads the 64-bit register backwards from the source span.
+    /// Reloads the 64-bit register backwards from the source span (MSB-downward per RFC 8878).
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Refill()
@@ -64,13 +64,15 @@ public ref struct ZstdBitReader
         while (_bitsLeft <= 56 && _bytePos > 0)
         {
             _bytePos--;
-            _container |= ((ulong)_source[_bytePos]) << _bitsLeft;
+            _container = (_container << 8) | _source[_bytePos];
             _bitsLeft += 8;
         }
     }
 
     /// <summary>
     /// Peeks <paramref name="count"/> bits from the bit container without advancing position.
+    /// Zero-pads missing low bits at stream end to support canonical prefix-table lookups;
+    /// callers must validate actual bit availability via <see cref="ConsumeBits"/>.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public uint PeekBits(int count)
@@ -79,9 +81,18 @@ public ref struct ZstdBitReader
         if (_bitsLeft < count)
         {
             Refill();
-            if (_bitsLeft < count) throw new InvalidDataException("Bitstream underflow while peeking bits.");
+            if (_bitsLeft <= 0)
+            {
+                throw new InvalidDataException("Bitstream underflow while peeking bits.");
+            }
+            if (_bitsLeft < count)
+            {
+                ulong padMask = (1UL << count) - 1UL;
+                return (uint)((_container << (count - _bitsLeft)) & padMask);
+            }
         }
-        return (uint)(_container & ((1UL << count) - 1));
+
+        return (uint)((_container >> (_bitsLeft - count)) & ((1UL << count) - 1UL));
     }
 
     /// <summary>
@@ -90,7 +101,14 @@ public ref struct ZstdBitReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void ConsumeBits(int count)
     {
-        _container >>= count;
+        if (_bitsLeft < count)
+        {
+            Refill();
+            if (_bitsLeft < count)
+            {
+                throw new InvalidDataException("Bitstream underflow while consuming bits.");
+            }
+        }
         _bitsLeft -= count;
     }
 
@@ -107,10 +125,94 @@ public ref struct ZstdBitReader
             if (_bitsLeft < count) throw new InvalidDataException("Bitstream underflow while reading bits.");
         }
 
-        uint value = (uint)(_container & ((1UL << count) - 1));
-        _container >>= count;
+        uint value = (uint)((_container >> (_bitsLeft - count)) & ((1UL << count) - 1UL));
         _bitsLeft -= count;
         return value;
+    }
+
+    /// <summary>
+    /// Attempts to read <paramref name="count"/> bits, returning false without throwing if fewer than
+    /// <paramref name="count"/> bits remain in the entire backward bitstream.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryReadBits(int count, out uint value)
+    {
+        if (count == 0)
+        {
+            value = 0;
+            return true;
+        }
+        if (_bitsLeft < count)
+        {
+            Refill();
+            if (_bitsLeft < count)
+            {
+                value = 0;
+                return false;
+            }
+        }
+
+        value = (uint)((_container >> (_bitsLeft - count)) & ((1UL << count) - 1UL));
+        _bitsLeft -= count;
+        return true;
+    }
+}
+
+/// <summary>
+/// High-performance zero-allocation forward bit accumulator that produces RFC 8878 backward bitstreams
+/// (terminated by a trailing sentinel '1' bit in the final byte).
+/// </summary>
+public ref struct ZstdBitWriter
+{
+    private readonly Span<byte> _destination;
+    private int _bytePos;
+    private ulong _container;
+    private int _bitCount;
+
+    public ZstdBitWriter(Span<byte> destination)
+    {
+        _destination = destination;
+        _bytePos = 0;
+        _container = 0;
+        _bitCount = 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void AddBits(uint value, int count)
+    {
+        if (count == 0) return;
+        ulong masked = value & ((1UL << count) - 1UL);
+        _container |= masked << _bitCount;
+        _bitCount += count;
+
+        while (_bitCount >= 8)
+        {
+            if (_bytePos >= _destination.Length)
+            {
+                throw new ArgumentException("Zstd bitstream destination buffer overflow.");
+            }
+            _destination[_bytePos++] = (byte)_container;
+            _container >>= 8;
+            _bitCount -= 8;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public int Finish()
+    {
+        // Append mandatory RFC 8878 end-of-stream sentinel '1' bit
+        AddBits(1U, 1);
+        if (_bitCount > 0)
+        {
+            if (_bytePos >= _destination.Length)
+            {
+                throw new ArgumentException("Zstd bitstream destination buffer overflow.");
+            }
+            _destination[_bytePos++] = (byte)_container;
+            _container = 0;
+            _bitCount = 0;
+        }
+        return _bytePos;
     }
 }
 
@@ -153,7 +255,7 @@ public ref struct ZstdForwardBitReader
         if (_bitsLeft < count)
         {
             Refill();
-            if (_bitsLeft < count) throw new InvalidDataException("Forward bitstream underflow.");
+            if (_bitsLeft <= 0) throw new InvalidDataException("Forward bitstream underflow.");
         }
         return (uint)(_container & ((1UL << count) - 1));
     }
@@ -161,6 +263,11 @@ public ref struct ZstdForwardBitReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void ConsumeBits(int count)
     {
+        if (_bitsLeft < count)
+        {
+            Refill();
+            if (_bitsLeft < count) throw new InvalidDataException("Forward bitstream underflow.");
+        }
         _container >>= count;
         _bitsLeft -= count;
     }

@@ -246,9 +246,8 @@ public sealed class Tier5AdversarialKdfAndPqcTests
         // Corrupt byte 0 of ciphertext
         ct[0] ^= 0x01;
 
-        bool success = MlKemEngine.MlKem768.Decapsulate(sk, ct, ssRejected);
+        MlKemEngine.MlKem768.Decapsulate(sk, ct, ssRejected);
 
-        Assert.False(success);
         Assert.NotEqual(ssGolden, ssRejected);
         Assert.False(ssRejected.AsSpan().SequenceEqual(new byte[32])); // Pseudorandom, not zero
     }
@@ -267,9 +266,8 @@ public sealed class Tier5AdversarialKdfAndPqcTests
 
         ct[ct.Length / 2] ^= 0x80;
 
-        bool success = MlKemEngine.MlKem768.Decapsulate(sk, ct, ssRejected);
+        MlKemEngine.MlKem768.Decapsulate(sk, ct, ssRejected);
 
-        Assert.False(success);
         Assert.NotEqual(ssGolden, ssRejected);
     }
 
@@ -287,9 +285,8 @@ public sealed class Tier5AdversarialKdfAndPqcTests
 
         ct[ct.Length - 1] ^= 0x40;
 
-        bool success = MlKemEngine.MlKem768.Decapsulate(sk, ct, ssRejected);
+        MlKemEngine.MlKem768.Decapsulate(sk, ct, ssRejected);
 
-        Assert.False(success);
         Assert.NotEqual(ssGolden, ssRejected);
     }
 
@@ -307,9 +304,8 @@ public sealed class Tier5AdversarialKdfAndPqcTests
 
         sk[10] ^= 0x01; // Corrupt secret key
 
-        bool success = MlKemEngine.MlKem768.Decapsulate(sk, ct, ssRejected);
+        MlKemEngine.MlKem768.Decapsulate(sk, ct, ssRejected);
 
-        Assert.False(success);
         Assert.NotEqual(ssGolden, ssRejected);
     }
 
@@ -327,9 +323,8 @@ public sealed class Tier5AdversarialKdfAndPqcTests
 
         ct[0] ^= 0x01;
 
-        bool success = MlKemEngine.MlKem1024.Decapsulate(sk, ct, ssRejected);
+        MlKemEngine.MlKem1024.Decapsulate(sk, ct, ssRejected);
 
-        Assert.False(success);
         Assert.NotEqual(ssGolden, ssRejected);
     }
 
@@ -347,9 +342,8 @@ public sealed class Tier5AdversarialKdfAndPqcTests
 
         ct[ct.Length - 1] ^= 0xFF;
 
-        bool success = MlKemEngine.MlKem1024.Decapsulate(sk, ct, ssRejected);
+        MlKemEngine.MlKem1024.Decapsulate(sk, ct, ssRejected);
 
-        Assert.False(success);
         Assert.NotEqual(ssGolden, ssRejected);
     }
 
@@ -367,9 +361,8 @@ public sealed class Tier5AdversarialKdfAndPqcTests
 
         sk[100] ^= 0x02;
 
-        bool success = MlKemEngine.MlKem1024.Decapsulate(sk, ct, ssRejected);
+        MlKemEngine.MlKem1024.Decapsulate(sk, ct, ssRejected);
 
-        Assert.False(success);
         Assert.NotEqual(ssGolden, ssRejected);
     }
 }

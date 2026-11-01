@@ -64,9 +64,8 @@ public class Challenger1M4CryptoTortureTests
 
         // Decapsulate
         byte[] ssBob = new byte[MlKem768.SharedSecretBytes];
-        bool success = MlKemEngine.MlKem768.Decapsulate(dk, ct, ssBob);
+        MlKemEngine.MlKem768.Decapsulate(dk, ct, ssBob);
 
-        Assert.True(success, "Decapsulate must succeed with legitimate ciphertext.");
         Assert.True(ssAlice.AsSpan().SequenceEqual(ssBob), "Shared secrets must match 100% byte-for-byte.");
     }
 
@@ -102,9 +101,8 @@ public class Challenger1M4CryptoTortureTests
 
         // Decapsulate
         byte[] ssBob = new byte[MlKem1024.SharedSecretBytes];
-        bool success = MlKemEngine.MlKem1024.Decapsulate(dk, ct, ssBob);
+        MlKemEngine.MlKem1024.Decapsulate(dk, ct, ssBob);
 
-        Assert.True(success, "Decapsulate must succeed with legitimate ciphertext.");
         Assert.True(ssAlice.AsSpan().SequenceEqual(ssBob), "Shared secrets must match 100% byte-for-byte.");
     }
 
@@ -125,12 +123,8 @@ public class Challenger1M4CryptoTortureTests
             byte[] ssBob = new byte[kem.SharedSecretSizeInBytes];
 
             kem.Encapsulate(pk, ct, ssAlice);
-            bool success = kem.Decapsulate(sk, ct, ssBob);
+            kem.Decapsulate(sk, ct, ssBob);
 
-            if (!success)
-            {
-                throw new InvalidOperationException($"ML-KEM-768 Decapsulate returned false on run {i}!");
-            }
             if (!ssAlice.AsSpan().SequenceEqual(ssBob))
             {
                 throw new InvalidOperationException($"ML-KEM-768 shared secret mismatch on run {i}!");
@@ -155,12 +149,8 @@ public class Challenger1M4CryptoTortureTests
             byte[] ssBob = new byte[kem.SharedSecretSizeInBytes];
 
             kem.Encapsulate(pk, ct, ssAlice);
-            bool success = kem.Decapsulate(sk, ct, ssBob);
+            kem.Decapsulate(sk, ct, ssBob);
 
-            if (!success)
-            {
-                throw new InvalidOperationException($"ML-KEM-1024 Decapsulate returned false on run {i}!");
-            }
             if (!ssAlice.AsSpan().SequenceEqual(ssBob))
             {
                 throw new InvalidOperationException($"ML-KEM-1024 shared secret mismatch on run {i}!");
@@ -210,12 +200,8 @@ public class Challenger1M4CryptoTortureTests
             sponge.Squeeze(expectedReject);
 
             byte[] actualReject = new byte[32];
-            bool success = kem.Decapsulate(sk, ctTampered, actualReject);
+            kem.Decapsulate(sk, ctTampered, actualReject);
 
-            if (success)
-            {
-                throw new InvalidOperationException($"ML-KEM-768 Decapsulate succeeded for tampered byte index {byteIdx}!");
-            }
             if (!actualReject.AsSpan().SequenceEqual(expectedReject))
             {
                 throw new InvalidOperationException($"ML-KEM-768 rejection key mismatch for tampered byte index {byteIdx}!");
@@ -261,12 +247,8 @@ public class Challenger1M4CryptoTortureTests
             sponge.Squeeze(expectedReject);
 
             byte[] actualReject = new byte[32];
-            bool success = kem.Decapsulate(sk, ctTampered, actualReject);
+            kem.Decapsulate(sk, ctTampered, actualReject);
 
-            if (success)
-            {
-                throw new InvalidOperationException($"ML-KEM-1024 Decapsulate succeeded for tampered byte index {byteIdx}!");
-            }
             if (!actualReject.AsSpan().SequenceEqual(expectedReject))
             {
                 throw new InvalidOperationException($"ML-KEM-1024 rejection key mismatch for tampered byte index {byteIdx}!");
@@ -288,27 +270,35 @@ public class Challenger1M4CryptoTortureTests
         byte[] sk = new byte[kem.SecretKeySizeInBytes];
         kem.GenerateKeyPair(pk, sk);
 
-        // 2. Alice attempts to encapsulate with corrupted public key
+        // 2. Alice attempts to encapsulate with corrupted public key:
+        // Under FIPS 203 §7.2, unreduced coefficients (>= 3329) throw CryptographicException;
+        // reduced corruptions produce a mismatching shared secret upon decapsulation.
         int[] corruptOffsets = [0, 31, 100, 384, 768, 1151, 1183];
         foreach (int offset in corruptOffsets)
         {
             byte[] corruptedPk = (byte[])pk.Clone();
-            corruptedPk[offset] ^= 0x80;
+            corruptedPk[offset] ^= 0x01; // Flip low bit (guaranteed valid if <= 3327, or rejected if 3328 -> 3329)
 
             byte[] ct = new byte[kem.CiphertextSizeInBytes];
             byte[] ssAlice = new byte[32];
-            kem.Encapsulate(corruptedPk, ct, ssAlice);
+            try
+            {
+                kem.Encapsulate(corruptedPk, ct, ssAlice);
 
-            // Bob decapsulates with his legitimate secret key
-            byte[] ssBob = new byte[32];
-            bool success = kem.Decapsulate(sk, ct, ssBob);
+                // Bob decapsulates with his legitimate secret key
+                byte[] ssBob = new byte[32];
+                kem.Decapsulate(sk, ct, ssBob);
 
-            // Re-encryption c' computed with legitimate pk will not match ct created with corrupted pk
-            Assert.False(success, $"Decapsulation must reject ciphertext encapsulated with corrupted public key (offset {offset})");
-            Assert.False(ssAlice.AsSpan().SequenceEqual(ssBob), "Shared secret must not match when pk is corrupted.");
+                // Re-encryption c' computed with legitimate pk will not match ct created with corrupted pk
+                Assert.False(ssAlice.AsSpan().SequenceEqual(ssBob), "Shared secret must not match when pk is corrupted.");
+            }
+            catch (CryptographicException)
+            {
+                // Valid FIPS 203 §7.2 modulus rejection when bit flip pushed coefficient to >= 3329
+            }
         }
 
-        // 3. Bob's secret key container has embedded public key tampered
+        // 3. Bob's secret key container has embedded public key tampered -> FIPS 203 §7.3 rejects via H(ek) != h
         byte[] ctLegit = new byte[kem.CiphertextSizeInBytes];
         byte[] ssLegit = new byte[32];
         kem.Encapsulate(pk, ctLegit, ssLegit);
@@ -319,19 +309,15 @@ public class Challenger1M4CryptoTortureTests
         skCorruptedEk[ekOffsetInDk + 10] ^= 0x01; // Corrupt embedded ek
 
         byte[] ssRejected1 = new byte[32];
-        bool decaps1 = kem.Decapsulate(skCorruptedEk, ctLegit, ssRejected1);
-        Assert.False(decaps1, "Decapsulate must fail when embedded public key in sk is tampered.");
-        Assert.False(ssLegit.AsSpan().SequenceEqual(ssRejected1));
+        Assert.Throws<CryptographicException>(() => kem.Decapsulate(skCorruptedEk, ctLegit, ssRejected1));
 
-        // 4. Bob's secret key container has embedded hash H(ek) tampered
+        // 4. Bob's secret key container has embedded hash H(ek) tampered -> FIPS 203 §7.3 rejects via H(ek) != h
         int hOffsetInDk = ekOffsetInDk + MlKem768.PublicKeyBytes;
         byte[] skCorruptedH = (byte[])sk.Clone();
         skCorruptedH[hOffsetInDk + 5] ^= 0x01; // Corrupt embedded H(ek)
 
         byte[] ssRejected2 = new byte[32];
-        bool decaps2 = kem.Decapsulate(skCorruptedH, ctLegit, ssRejected2);
-        Assert.False(decaps2, "Decapsulate must fail when embedded H(ek) in sk is tampered.");
-        Assert.False(ssLegit.AsSpan().SequenceEqual(ssRejected2));
+        Assert.Throws<CryptographicException>(() => kem.Decapsulate(skCorruptedH, ctLegit, ssRejected2));
 
         // 5. Corrupting seed z in sk causes rejection output to shift to J(z_corrupted || ct)
         int zOffsetInDk = hOffsetInDk + 32;
@@ -342,8 +328,7 @@ public class Challenger1M4CryptoTortureTests
         tamperedCt[0] ^= 0x02;
 
         byte[] ssRejected3 = new byte[32];
-        bool decaps3 = kem.Decapsulate(skCorruptedZ, tamperedCt, ssRejected3);
-        Assert.False(decaps3);
+        kem.Decapsulate(skCorruptedZ, tamperedCt, ssRejected3);
 
         // Compute expected rejection secret using corrupted z
         byte[] zCorrupted = new byte[32];

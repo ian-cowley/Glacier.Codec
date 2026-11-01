@@ -84,6 +84,12 @@ public static class Lz4FrameCodec
 
             if (compLen >= chunkSize)
             {
+                int needed = 4 + chunkSize + (blockChecksum ? 4 : 0);
+                if (destination.Length - dst < needed)
+                {
+                    throw new ArgumentException("Destination buffer too small for LZ4 frame raw block.", nameof(destination));
+                }
+
                 // Uncompressed / Raw Block (MSB set)
                 uint rawBlockHeader = 0x80000000U | (uint)chunkSize;
                 BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(dst, 4), rawBlockHeader);
@@ -101,6 +107,12 @@ public static class Lz4FrameCodec
             }
             else
             {
+                int needed = 4 + compLen + (blockChecksum ? 4 : 0);
+                if (destination.Length - dst < needed)
+                {
+                    throw new ArgumentException("Destination buffer too small for LZ4 frame compressed block.", nameof(destination));
+                }
+
                 // Compressed Block (MSB = 0)
                 BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(dst, 4), (uint)compLen);
                 dst += 4;
@@ -117,6 +129,12 @@ public static class Lz4FrameCodec
             }
 
             srcPos += chunkSize;
+        }
+
+        int trailerNeeded = 4 + (contentChecksum ? 4 : 0);
+        if (destination.Length - dst < trailerNeeded)
+        {
+            throw new ArgumentException("Destination buffer too small for LZ4 frame trailer.", nameof(destination));
         }
 
         // 6. EndMark (0x00000000)
@@ -206,6 +224,7 @@ public static class Lz4FrameCodec
 
         // Read Data Blocks
         int dst = 0;
+        bool sawEndMark = false;
         while (src + 4 <= source.Length)
         {
             uint blockSize = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(src, 4));
@@ -214,6 +233,7 @@ public static class Lz4FrameCodec
             if (blockSize == 0)
             {
                 // EndMark reached
+                sawEndMark = true;
                 break;
             }
 
@@ -245,6 +265,16 @@ public static class Lz4FrameCodec
                 int decomp = Lz4Codec.Decompress(blockData, destination.Slice(dst));
                 dst += decomp;
             }
+        }
+
+        if (!sawEndMark)
+        {
+            throw new InvalidDataException("LZ4 frame truncated before EndMark.");
+        }
+
+        if (contentSizeFlag && (ulong)dst != contentSize)
+        {
+            throw new InvalidDataException($"LZ4 frame content size mismatch: expected {contentSize}, decoded {dst}.");
         }
 
         // Verify Content Checksum if requested

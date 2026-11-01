@@ -159,12 +159,13 @@ ReadOnlySpan<byte> plaintext = "Glacier wire-speed encrypted payload"u8;
 
 Span<byte> ciphertext = stackalloc byte[plaintext.Length];
 Span<byte> tag = stackalloc byte[16];
+Span<byte> decrypted = stackalloc byte[plaintext.Length];
 
 // Execute authenticated encryption with hardware acceleration
 Aes256Gcm.Encrypt(key, nonce, plaintext, ciphertext, tag);
 
-// Decrypt and verify in constant time
-bool valid = Aes256Gcm.Decrypt(key, nonce, ciphertext, tag, plaintext);
+// Decrypt and verify in constant time (zeroes destination on tag mismatch)
+bool valid = Aes256Gcm.Decrypt(key, nonce, ciphertext, tag, decrypted);
 ```
 
 ### 4. Hash Data with Multi-Threaded BLAKE3
@@ -183,14 +184,14 @@ Blake3Hasher.Hash(data, digest);
 
 ## Verification & Conformance
 
-The test harness runs 1,363 automated unit, boundary, and adversarial torture tests:
+The test harness runs 1,372 automated unit, boundary, and adversarial torture tests:
 - **NIST FIPS 180-4:** 100% pass on SHA-256 golden vectors.
-- **NIST SP 800-38D:** 100% pass on AES-GCM 128-bit/256-bit test vectors.
+- **NIST SP 800-38D:** 100% pass on AES-GCM 128-bit/256-bit test vectors and zero unauthenticated plaintext exposure on tag mismatch.
 - **RFC 8439:** 100% pass on ChaCha20-Poly1305 test fixtures.
 - **RFC 9106:** 100% pass on Argon2id memory-hard KDF test suites.
-- **NIST FIPS 203:** 100% pass on ML-KEM-768 and ML-KEM-1024 ACVP Known Answer Tests.
-- **RFC 8878:** 100% round-trip fidelity on Zstandard multi-block frames.
-- **Zero Secrets Audit:** 164 source files scanned with 0 credentials detected.
+- **NIST FIPS 203:** 100% pass on ML-KEM-768 and ML-KEM-1024 ACVP Known Answer Tests, including §7.2 encapsulation key modulus bounds and §7.3 decapsulation key hash validation.
+- **RFC 8878:** 100% round-trip fidelity and bidirectional `zstd` CLI interoperability across multi-block RLE, raw, and compressed Zstandard frames.
+- **Zero Secrets Audit:** 198 source files scanned with 0 credentials detected.
 
 ---
 

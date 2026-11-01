@@ -10,10 +10,10 @@ using Glacier.Codec.Memory;
 /// <summary>
 /// Ultra-high-throughput Zstandard (RFC 8878) block and frame codec.
 /// Supports standard and skippable frames, raw/RLE/compressed blocks,
-/// 1-stream and 4-stream backward Huffman literals, FSE sequence decoding,
+/// 1-stream and 4-stream backward Huffman literals, FSE sequence encoding and decoding,
 /// 3-entry repeat offset rolling history, and xxHash64 content checksums.
 /// </summary>
-public sealed class ZstdCodec : ICompressionCodec
+public sealed partial class ZstdCodec : ICompressionCodec
 {
     /// <summary>RFC 8878 Zstandard standard frame magic number (0xFD2FB528).</summary>
     public const uint MagicNumber = ZstdConstants.MagicNumber;
@@ -33,97 +33,11 @@ public sealed class ZstdCodec : ICompressionCodec
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int MaximumCompressedSize(int inputLength)
     {
-        if (inputLength < 0) throw new ArgumentOutOfRangeException(nameof(inputLength));
+        if (inputLength < 0 || inputLength > 2_130_706_367)
+        {
+            throw new ArgumentOutOfRangeException(nameof(inputLength));
+        }
         return inputLength + (inputLength / 128) + 64;
-    }
-
-    /// <summary>
-    /// Compresses source bytes into an RFC 8878 compliant Zstandard frame.
-    /// </summary>
-    public static int Compress(ReadOnlySpan<byte> source, Span<byte> destination)
-    {
-        int dst = 0;
-
-        // 1. Magic Number (0xFD2FB528 LE: 28 B5 2F FD)
-        BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(dst, 4), MagicNumber);
-        dst += 4;
-
-        if (source.IsEmpty)
-        {
-            // Empty frame: FHD Single_Segment=1, Checksum=0, FCS_Flag=0 (0x20)
-            destination[dst++] = 0x20;
-            // Frame Content Size (0x00)
-            destination[dst++] = 0x00;
-            // Block Header: Last=1, Raw=0, Size=0 (0x000001)
-            destination[dst++] = 0x01;
-            destination[dst++] = 0x00;
-            destination[dst++] = 0x00;
-            return dst;
-        }
-
-        // FHD: Single_Segment=1 (0x20), Content_Checksum=1 (0x04)
-        if (source.Length < 256)
-        {
-            destination[dst++] = 0x24; // FCS_Flag=0, Single_Segment=1, Checksum=1
-            destination[dst++] = (byte)source.Length;
-        }
-        else
-        {
-            destination[dst++] = 0xA4; // FCS_Flag=2, Single_Segment=1, Checksum=1
-            BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(dst, 4), (uint)source.Length);
-            dst += 4;
-        }
-
-        // Chunk input into RFC 8878 compliant blocks (<= 128 KB each)
-        int srcPos = 0;
-        while (srcPos < source.Length)
-        {
-            int chunkSize = Math.Min(source.Length - srcPos, ZstdConstants.MaxBlockSize);
-            bool isLast = (srcPos + chunkSize >= source.Length);
-            ReadOnlySpan<byte> chunk = source.Slice(srcPos, chunkSize);
-
-            // Check if chunk qualifies for RLE block encoding
-            bool isChunkRle = false;
-            if (chunk.Length >= 16)
-            {
-                byte first = chunk[0];
-                int run = 1;
-                while (run < chunk.Length && chunk[run] == first) run++;
-                if (run == chunk.Length) isChunkRle = true;
-            }
-
-            if (isChunkRle)
-            {
-                // Emit RLE Block: Last=(isLast ? 1 : 0), Type=1 (RLE), Size=chunkSize
-                uint blockHeader = (isLast ? 1U : 0U) | (1U << 1) | ((uint)chunkSize << 3);
-                destination[dst++] = (byte)(blockHeader & 0xFF);
-                destination[dst++] = (byte)((blockHeader >> 8) & 0xFF);
-                destination[dst++] = (byte)((blockHeader >> 16) & 0xFF);
-
-                destination[dst++] = chunk[0];
-            }
-            else
-            {
-                // Emit Raw Block: Last=(isLast ? 1 : 0), Type=0 (Raw), Size=chunkSize
-                uint blockHeader = (isLast ? 1U : 0U) | (0U << 1) | ((uint)chunkSize << 3);
-                destination[dst++] = (byte)(blockHeader & 0xFF);
-                destination[dst++] = (byte)((blockHeader >> 8) & 0xFF);
-                destination[dst++] = (byte)((blockHeader >> 16) & 0xFF);
-
-                chunk.CopyTo(destination.Slice(dst, chunkSize));
-                dst += chunkSize;
-            }
-
-            srcPos += chunkSize;
-        }
-
-        // Content Checksum: lower 32-bits of XXH64(source, seed=0)
-        ulong hash64 = XxHash32.Hash64(source, 0);
-        uint checksum32 = (uint)(hash64 & 0xFFFFFFFF);
-        BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(dst, 4), checksum32);
-        dst += 4;
-
-        return dst;
     }
 
     /// <summary>
@@ -204,6 +118,15 @@ public sealed class ZstdCodec : ICompressionCodec
 
         int dst = 0;
         var seqExec = new SequenceExecutor();
+        Span<HuffmanTableEntry> huffTable = stackalloc HuffmanTableEntry[2048];
+        int huffMaxBits = 0;
+        bool hasHuffTable = false;
+
+        Span<FseTableEntry> tableLL = stackalloc FseTableEntry[512];
+        Span<FseTableEntry> tableOF = stackalloc FseTableEntry[256];
+        Span<FseTableEntry> tableML = stackalloc FseTableEntry[512];
+        int llAccuracy = 0, ofAccuracy = 0, mlAccuracy = 0;
+        bool hasLL = false, hasOF = false, hasML = false;
 
         // Decompress blocks
         bool isLastBlock = false;
@@ -211,7 +134,6 @@ public sealed class ZstdCodec : ICompressionCodec
         {
             if (src + 3 > source.Length)
             {
-                if (contentChecksum && src + 4 <= source.Length) break;
                 throw new InvalidDataException("Truncated block header.");
             }
 
@@ -259,7 +181,23 @@ public sealed class ZstdCodec : ICompressionCodec
             }
             else if (blockType == ZstdConstants.BlockTypeCompressed)
             {
-                DecodeCompressedBlock(blockPayload, destination, ref dst, ref seqExec);
+                DecodeCompressedBlock(
+                    blockPayload,
+                    destination,
+                    ref dst,
+                    ref seqExec,
+                    huffTable,
+                    ref huffMaxBits,
+                    ref hasHuffTable,
+                    tableLL,
+                    ref llAccuracy,
+                    ref hasLL,
+                    tableOF,
+                    ref ofAccuracy,
+                    ref hasOF,
+                    tableML,
+                    ref mlAccuracy,
+                    ref hasML);
             }
         }
 
@@ -285,7 +223,19 @@ public sealed class ZstdCodec : ICompressionCodec
         ReadOnlySpan<byte> block,
         Span<byte> destination,
         ref int dst,
-        ref SequenceExecutor seqExec)
+        ref SequenceExecutor seqExec,
+        Span<HuffmanTableEntry> huffTable,
+        ref int huffMaxBits,
+        ref bool hasHuffTable,
+        Span<FseTableEntry> tableLL,
+        ref int llAccuracy,
+        ref bool hasLL,
+        Span<FseTableEntry> tableOF,
+        ref int ofAccuracy,
+        ref bool hasOF,
+        Span<FseTableEntry> tableML,
+        ref int mlAccuracy,
+        ref bool hasML)
     {
         if (block.IsEmpty) return;
 
@@ -355,36 +305,55 @@ public sealed class ZstdCodec : ICompressionCodec
 
         if (litType == ZstdConstants.LiteralsTypeRaw)
         {
+            if (litDataOffset + regSize > block.Length) throw new InvalidDataException("Truncated raw literals block.");
             block.Slice(litDataOffset, regSize).CopyTo(literals);
             litDataOffset += regSize;
         }
         else if (litType == ZstdConstants.LiteralsTypeRle)
         {
+            if (litDataOffset >= block.Length) throw new InvalidDataException("Truncated RLE literals block.");
             byte b = block[litDataOffset++];
             literals.Fill(b);
         }
         else if (litType == ZstdConstants.LiteralsTypeCompressed)
         {
-            Span<HuffmanTableEntry> huffTable = stackalloc HuffmanTableEntry[2048];
-            int treeBytes = HuffmanDecoder.BuildTable(block.Slice(litDataOffset), huffTable, out int maxBits);
+            if (litDataOffset + compSize > block.Length) throw new InvalidDataException("Truncated compressed literals block.");
+            int treeBytes = HuffmanDecoder.BuildTable(block.Slice(litDataOffset, compSize), huffTable, out huffMaxBits);
+            hasHuffTable = true;
             litDataOffset += treeBytes;
 
             int streamsSize = compSize - treeBytes;
+            if (streamsSize < 0) throw new InvalidDataException("Invalid Huffman tree size.");
             ReadOnlySpan<byte> streamsPayload = block.Slice(litDataOffset, streamsSize);
             litDataOffset += streamsSize;
 
             if (is4Stream)
             {
-                HuffmanDecoder.Decode4Streams(streamsPayload, huffTable, maxBits, literals);
+                HuffmanDecoder.Decode4Streams(streamsPayload, huffTable, huffMaxBits, literals);
             }
             else
             {
-                HuffmanDecoder.Decode1Stream(streamsPayload, huffTable, maxBits, literals);
+                HuffmanDecoder.Decode1Stream(streamsPayload, huffTable, huffMaxBits, literals);
             }
         }
         else if (litType == ZstdConstants.LiteralsTypeTreeless)
         {
-            throw new InvalidDataException("Treeless literals block cannot appear as first block without dictionary.");
+            if (!hasHuffTable)
+            {
+                throw new InvalidDataException("Treeless literals block cannot appear before a Huffman table description.");
+            }
+            if (litDataOffset + compSize > block.Length) throw new InvalidDataException("Truncated treeless literals block.");
+            ReadOnlySpan<byte> streamsPayload = block.Slice(litDataOffset, compSize);
+            litDataOffset += compSize;
+
+            if (is4Stream)
+            {
+                HuffmanDecoder.Decode4Streams(streamsPayload, huffTable, huffMaxBits, literals);
+            }
+            else
+            {
+                HuffmanDecoder.Decode1Stream(streamsPayload, huffTable, huffMaxBits, literals);
+            }
         }
 
         // 2. Parse Sequences Section
@@ -392,6 +361,7 @@ public sealed class ZstdCodec : ICompressionCodec
         if (seqSection.IsEmpty)
         {
             // All literals, no sequences
+            if (dst + literals.Length > destination.Length) throw new InvalidDataException("Destination buffer overflow.");
             literals.CopyTo(destination.Slice(dst));
             dst += literals.Length;
             return;
@@ -422,6 +392,7 @@ public sealed class ZstdCodec : ICompressionCodec
 
         if (numSequences == 0)
         {
+            if (dst + literals.Length > destination.Length) throw new InvalidDataException("Destination buffer overflow.");
             literals.CopyTo(destination.Slice(dst));
             dst += literals.Length;
             return;
@@ -436,60 +407,79 @@ public sealed class ZstdCodec : ICompressionCodec
         int ofMode = (modes >> 4) & 0x03;
         int mlMode = (modes >> 2) & 0x03;
 
-        Span<FseTableEntry> tableLL = stackalloc FseTableEntry[64];
-        Span<FseTableEntry> tableOF = stackalloc FseTableEntry[32];
-        Span<FseTableEntry> tableML = stackalloc FseTableEntry[64];
-
-        int llAccuracy = 6;
-        int ofAccuracy = 5;
-        int mlAccuracy = 6;
-
         // Setup LL Table
         if (llMode == 0)
         {
             FseDecoder.PredefinedLiteralLengthsTable.CopyTo(tableLL);
+            llAccuracy = 6;
+            hasLL = true;
         }
         else if (llMode == 1)
         {
-            FseDecoder.BuildRleTable(seqSection[seqOffset++], tableLL);
+            if (seqOffset >= seqSection.Length) throw new InvalidDataException("Truncated RLE LL symbol.");
+            FseDecoder.BuildRleTable(seqSection[seqOffset++], tableLL.Slice(0, 1));
             llAccuracy = 0;
+            hasLL = true;
         }
         else if (llMode == 2)
         {
             int hBytes = FseDecoder.ReadTable(seqSection.Slice(seqOffset), 35, 9, tableLL, out llAccuracy);
             seqOffset += hBytes;
+            hasLL = true;
+        }
+        else if (!hasLL)
+        {
+            throw new InvalidDataException("Repeat_Mode for Literal_Lengths used without prior table.");
         }
 
         // Setup OF Table
         if (ofMode == 0)
         {
             FseDecoder.PredefinedOffsetsTable.CopyTo(tableOF);
+            ofAccuracy = 5;
+            hasOF = true;
         }
         else if (ofMode == 1)
         {
-            FseDecoder.BuildRleTable(seqSection[seqOffset++], tableOF);
+            if (seqOffset >= seqSection.Length) throw new InvalidDataException("Truncated RLE OF symbol.");
+            FseDecoder.BuildRleTable(seqSection[seqOffset++], tableOF.Slice(0, 1));
             ofAccuracy = 0;
+            hasOF = true;
         }
         else if (ofMode == 2)
         {
             int hBytes = FseDecoder.ReadTable(seqSection.Slice(seqOffset), 31, 8, tableOF, out ofAccuracy);
             seqOffset += hBytes;
+            hasOF = true;
+        }
+        else if (!hasOF)
+        {
+            throw new InvalidDataException("Repeat_Mode for Offsets used without prior table.");
         }
 
         // Setup ML Table
         if (mlMode == 0)
         {
             FseDecoder.PredefinedMatchLengthsTable.CopyTo(tableML);
+            mlAccuracy = 6;
+            hasML = true;
         }
         else if (mlMode == 1)
         {
-            FseDecoder.BuildRleTable(seqSection[seqOffset++], tableML);
+            if (seqOffset >= seqSection.Length) throw new InvalidDataException("Truncated RLE ML symbol.");
+            FseDecoder.BuildRleTable(seqSection[seqOffset++], tableML.Slice(0, 1));
             mlAccuracy = 0;
+            hasML = true;
         }
         else if (mlMode == 2)
         {
             int hBytes = FseDecoder.ReadTable(seqSection.Slice(seqOffset), 52, 9, tableML, out mlAccuracy);
             seqOffset += hBytes;
+            hasML = true;
+        }
+        else if (!hasML)
+        {
+            throw new InvalidDataException("Repeat_Mode for Match_Lengths used without prior table.");
         }
 
         // 3. Decode Backward Bitstream for Sequences
@@ -537,6 +527,7 @@ public sealed class ZstdCodec : ICompressionCodec
         if (litIdx < literals.Length)
         {
             int remLits = literals.Length - litIdx;
+            if (dst + remLits > destination.Length) throw new InvalidDataException("Destination buffer overflow.");
             literals.Slice(litIdx, remLits).CopyTo(destination.Slice(dst, remLits));
             dst += remLits;
         }

@@ -76,20 +76,34 @@ public static class HuffmanDecoder
             Span<FseTableEntry> fseTable = stackalloc FseTableEntry[64];
             int fseHeaderBytes = FseDecoder.ReadTable(fseBytes, maxSymbol: 255, maxAccuracyLog: 6, fseTable, out int accuracyLog);
 
-            // Decode weights using 2 interleaved states from backward bitstream
+            // Decode weights using 2 interleaved states from backward bitstream per RFC 8878 Section 4.2.1.2
             var bitReader = new ZstdBitReader(fseBytes.Slice(fseHeaderBytes));
             uint state1 = bitReader.ReadBits(accuracyLog);
             uint state2 = bitReader.ReadBits(accuracyLog);
 
-            while (!bitReader.IsFinished && numSymbols < 255)
+            while (numSymbols < 255)
             {
                 weights[numSymbols++] = fseTable[(int)state1].Symbol;
                 if (numSymbols >= 255) break;
-                state1 = fseTable[(int)state1].NewState + bitReader.ReadBits(fseTable[(int)state1].NumBits);
+
+                int nbBits1 = fseTable[(int)state1].NumBits;
+                if (!bitReader.TryReadBits(nbBits1, out uint add1))
+                {
+                    weights[numSymbols++] = fseTable[(int)state2].Symbol;
+                    break;
+                }
+                state1 = fseTable[(int)state1].NewState + add1;
 
                 weights[numSymbols++] = fseTable[(int)state2].Symbol;
                 if (numSymbols >= 255) break;
-                state2 = fseTable[(int)state2].NewState + bitReader.ReadBits(fseTable[(int)state2].NumBits);
+
+                int nbBits2 = fseTable[(int)state2].NumBits;
+                if (!bitReader.TryReadBits(nbBits2, out uint add2))
+                {
+                    weights[numSymbols++] = fseTable[(int)state1].Symbol;
+                    break;
+                }
+                state2 = fseTable[(int)state2].NewState + add2;
             }
         }
 
@@ -106,7 +120,7 @@ public static class HuffmanDecoder
 
         if (weightSum == 0) throw new InvalidDataException("Corrupted Huffman weights: total weight sum is 0.");
 
-        maxBits = BitOperations.Log2((uint)(weightSum - 1)) + 1;
+        maxBits = BitOperations.Log2((uint)weightSum) + 1;
         if (maxBits > 11) throw new InvalidDataException($"Corrupted Huffman weights: tree depth ({maxBits}) exceeds 11 bits.");
 
         int rest = (1 << maxBits) - weightSum;

@@ -270,14 +270,12 @@ public sealed class M6AdversarialEmpiricalChallengeTests
         MlKemEngine.MlKem768.Encapsulate(pk, ct, ssOriginal);
 
         // Decapsulate valid ciphertext
-        bool validResult = MlKemEngine.MlKem768.Decapsulate(sk, ct, ssValid);
-        Assert.True(validResult);
+        MlKemEngine.MlKem768.Decapsulate(sk, ct, ssValid);
         Assert.True(ssOriginal.AsSpan().SequenceEqual(ssValid));
 
         // Corrupt single bit in ciphertext
         ct[42] ^= 0x01;
-        bool rejectedResult1 = MlKemEngine.MlKem768.Decapsulate(sk, ct, ssRejected1);
-        Assert.False(rejectedResult1); // Implicit rejection indicator
+        MlKemEngine.MlKem768.Decapsulate(sk, ct, ssRejected1);
 
         // Assert shared secret is NOT the legitimate shared secret
         Assert.False(ssOriginal.AsSpan().SequenceEqual(ssRejected1));

@@ -27,8 +27,7 @@ public class Tier4_PqSecureSessionHandshake
 
         // Step 3: Alice decapsulates shared secret using her secret key
         byte[] aliceSharedSecret = new byte[pqKem.SharedSecretSizeInBytes];
-        bool decapsOk = pqKem.Decapsulate(aliceSecretKey, ciphertext, aliceSharedSecret);
-        Assert.True(decapsOk, "Alice must successfully decapsulate shared secret.");
+        pqKem.Decapsulate(aliceSecretKey, ciphertext, aliceSharedSecret);
         Assert.Equal(bobSharedSecret, aliceSharedSecret);
 
         // Step 4: Both parties derive duplex session keys via BLAKE3 KDF (Alice->Bob key, Bob->Alice key)

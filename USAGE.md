@@ -102,13 +102,14 @@ ReadOnlySpan<byte> nonce = stackalloc byte[12];    // 96-bit standard nonce
 ReadOnlySpan<byte> plaintext = "Confidential columnar record"u8;
 
 Span<byte> ciphertext = stackalloc byte[plaintext.Length];
+Span<byte> decrypted = stackalloc byte[plaintext.Length];
 Span<byte> tag = stackalloc byte[16];              // 128-bit authentication tag
 
 // Encrypt payload with zero GC allocation
 Aes256Gcm.Encrypt(key, nonce, plaintext, ciphertext, tag);
 
-// Decrypt and verify tag in constant time
-bool success = Aes256Gcm.Decrypt(key, nonce, ciphertext, tag, plaintext);
+// Decrypt and verify tag in constant time (never writes unauthenticated plaintext on mismatch)
+bool success = Aes256Gcm.Decrypt(key, nonce, ciphertext, tag, decrypted);
 if (!success)
 {
     throw new CryptographicException("Authentication tag verification failed.");
@@ -129,10 +130,11 @@ ReadOnlySpan<byte> nonce = stackalloc byte[12];
 ReadOnlySpan<byte> plaintext = "High-speed sensor telemetry"u8;
 
 Span<byte> ciphertext = stackalloc byte[plaintext.Length];
+Span<byte> decrypted = stackalloc byte[plaintext.Length];
 Span<byte> tag = stackalloc byte[16];
 
 ChaCha20Poly1305.Encrypt(key, nonce, plaintext, ciphertext, tag);
-bool valid = ChaCha20Poly1305.Decrypt(key, nonce, ciphertext, tag, plaintext);
+bool valid = ChaCha20Poly1305.Decrypt(key, nonce, ciphertext, tag, decrypted);
 ```
 
 ---
@@ -197,12 +199,12 @@ Span<byte> publicKey = stackalloc byte[MlKem768.PublicKeyBytes];   // 1184 bytes
 Span<byte> secretKey = stackalloc byte[MlKem768.SecretKeyBytes];   // 2400 bytes
 MlKem768.GenerateKeyPair(publicKey, secretKey);
 
-// Sender encapsulates shared secret into ciphertext
+// Sender encapsulates shared secret into ciphertext (validates FIPS 203 §7.2 ek modulus < 3329)
 Span<byte> ciphertext = stackalloc byte[MlKem768.CiphertextBytes]; // 1088 bytes
 Span<byte> senderSecret = stackalloc byte[32];
 MlKem768.Encapsulate(publicKey, ciphertext, senderSecret);
 
-// Receiver decapsulates shared secret using secret key (constant-time implicit rejection)
+// Receiver decapsulates shared secret (validates FIPS 203 §7.3 dk hash & uses constant-time implicit rejection)
 Span<byte> receiverSecret = stackalloc byte[32];
 MlKem768.Decapsulate(secretKey, ciphertext, receiverSecret);
 ```
@@ -219,7 +221,7 @@ Compress and decompress data at $>15\text{ GB/s}$ throughput:
 using Glacier.Codec.Compression.Lz4;
 
 ReadOnlySpan<byte> source = "Repeated telemetry data series for testing..."u8;
-Span<byte> compressed = stackalloc byte[Lz4Codec.GetMaxCompressedSize(source.Length)];
+Span<byte> compressed = stackalloc byte[Lz4Codec.MaximumCompressedSize(source.Length)];
 
 int compressedBytes = Lz4Codec.Compress(source, compressed);
 
@@ -231,13 +233,13 @@ int decompressedBytes = Lz4Codec.Decompress(compressed.Slice(0, compressedBytes)
 
 ### Recipe 8: Zstandard Multi-Block Compression
 
-Compress columnar data into RFC 8878 compliant multi-block frames:
+Compress columnar data into RFC 8878 compliant multi-block frames (LZ77 + Predefined FSE `Compressed_Block`, `RLE_Block`, and `Raw_Block`, interoperable with `zstd` CLI):
 
 ```csharp
 using Glacier.Codec.Compression.Zstd;
 
 ReadOnlySpan<byte> source = GetLargeDataset(); // e.g. 500KB
-Span<byte> compressed = new byte[ZstdCodec.GetMaxCompressedSize(source.Length)];
+Span<byte> compressed = new byte[ZstdCodec.MaximumCompressedSize(source.Length)];
 
 int written = ZstdCodec.Compress(source, compressed);
 
@@ -270,7 +272,8 @@ ProcessBuffer(buffer);
 
 | Symptom | Root Cause | Remediation Procedure |
 | :--- | :--- | :--- |
-| `CryptographicException: Tag mismatch` | Ciphertext or tag was modified in transit. | Verify network integrity; reject payload immediately. |
-| `ArgumentException: Destination too small` | Output span is smaller than maximum compressed size. | Call `GetMaxCompressedSize()` to size destination buffers. |
+| `CryptographicException: Tag mismatch` | Ciphertext or tag was modified in transit. | Verify network integrity; reject payload immediately (zero unauthenticated bytes are written to destination). |
+| `CryptographicException` in ML-KEM | Encapsulation key modulus $\ge 3329$ or decapsulation key hash mismatch (`FIPS 203` §7.2/§7.3). | Regenerate or re-fetch untampered key material; reject invalid peer encapsulation keys. |
+| `ArgumentException: Destination too small` | Output span is smaller than maximum compressed size. | Call `MaximumCompressedSize()` (or `ICompressionCodec.GetMaxCompressedSize()`) to size destination buffers. |
 | Reduced throughput on older CPUs | Silicon lacks AVX-512 or VAES instruction support. | Verify CPU flags with `CpuCapabilities`; engine uses scalar fallbacks. |
 | Memory leaks in custom loops | `SlabLease` or `SecureMemory` was not disposed. | Wrap leases in `using` blocks to trigger deterministic zeroing. |

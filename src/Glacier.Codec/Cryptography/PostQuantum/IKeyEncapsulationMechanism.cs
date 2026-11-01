@@ -25,7 +25,6 @@ public interface IKeyEncapsulationMechanism
     /// <summary>Encapsulates a shared secret using the recipient's public key.</summary>
     void Encapsulate(ReadOnlySpan<byte> publicKey, Span<byte> ciphertext, Span<byte> sharedSecret);
 
-    /// <summary>Decapsulates a shared secret from ciphertext using secret key.</summary>
-    /// <returns><c>true</c> if decapsulation succeeded; otherwise, <c>false</c> (or implicit rejection).</returns>
-    bool Decapsulate(ReadOnlySpan<byte> secretKey, ReadOnlySpan<byte> ciphertext, Span<byte> sharedSecret);
+    /// <summary>Decapsulates a shared secret from ciphertext using secret key (FIPS 203 implicit rejection).</summary>
+    void Decapsulate(ReadOnlySpan<byte> secretKey, ReadOnlySpan<byte> ciphertext, Span<byte> sharedSecret);
 }

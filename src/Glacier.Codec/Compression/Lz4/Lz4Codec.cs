@@ -30,7 +30,10 @@ public sealed unsafe class Lz4Codec : ICompressionCodec
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int MaximumCompressedSize(int inputLength)
     {
-        if (inputLength < 0) throw new ArgumentOutOfRangeException(nameof(inputLength));
+        if (inputLength < 0 || inputLength > 2_113_929_216)
+        {
+            throw new ArgumentOutOfRangeException(nameof(inputLength));
+        }
         return inputLength + (inputLength / 255) + 16;
     }
 
@@ -110,8 +113,11 @@ public sealed unsafe class Lz4Codec : ICompressionCodec
                 int matchLength = 4 + Lz4MatchFinder.ExtendMatch(ip + 4, match + 4, matchlimit);
                 int litLength = (int)(ip - anchor);
 
-                // Check destination space
-                if (op + litLength + 16 + (matchLength >> 8) > oend)
+                // Check exact destination space required for token + literal extensions + literals + 2B offset + match extensions
+                int litExtBytes = litLength >= 15 ? ((litLength - 15) / 255 + 1) : 0;
+                int matchExtBytes = (matchLength - 4) >= 15 ? ((matchLength - 19) / 255 + 1) : 0;
+                long seqRequired = 1L + litExtBytes + litLength + 2L + matchExtBytes;
+                if (seqRequired > (oend - op))
                 {
                     throw new ArgumentException("Destination buffer too small for LZ4 compression.", nameof(destination));
                 }
@@ -171,6 +177,13 @@ public sealed unsafe class Lz4Codec : ICompressionCodec
         _last_literals:
             // Emit trailing literals sequence
             int lastLits = (int)(iend - anchor);
+            int extensionBytes = lastLits >= 15 ? ((lastLits - 15) / 255 + 1) : 0;
+            long totalTrailingRequired = 1L + extensionBytes + lastLits;
+            if (totalTrailingRequired > (oend - op))
+            {
+                throw new ArgumentException("Destination buffer too small for LZ4 compression.", nameof(destination));
+            }
+
             int lastTokenL = lastLits < 15 ? lastLits : 15;
             *op++ = (byte)(lastTokenL << 4);
 
@@ -227,20 +240,30 @@ public sealed unsafe class Lz4Codec : ICompressionCodec
                 // 2. Multi-byte literal length extension
                 if (literalLength == 15)
                 {
+                    long litLenAcc = 15;
                     while (ip < iend && *ip == 255)
                     {
-                        literalLength += 255;
+                        litLenAcc += 255;
                         ip++;
+                        if (litLenAcc > (iend - ip) || litLenAcc > (oend - op))
+                        {
+                            throw new InvalidDataException("LZ4 literal length overflow.");
+                        }
                     }
                     if (ip >= iend) throw new InvalidDataException("LZ4 truncated literal length extension.");
-                    literalLength += *ip++;
+                    litLenAcc += *ip++;
+                    if (litLenAcc > (iend - ip) || litLenAcc > (oend - op))
+                    {
+                        throw new InvalidDataException("LZ4 literal length exceeds buffer bounds.");
+                    }
+                    literalLength = (int)litLenAcc;
                 }
 
                 // 3. Copy Literals
                 if (literalLength > 0)
                 {
-                    if (ip + literalLength > iend) throw new InvalidDataException("LZ4 truncated literal stream.");
-                    if (op + literalLength > oend) throw new InvalidDataException("LZ4 destination buffer too small for literals.");
+                    if (literalLength > (iend - ip)) throw new InvalidDataException("LZ4 truncated literal stream.");
+                    if (literalLength > (oend - op)) throw new InvalidDataException("LZ4 destination buffer too small for literals.");
 
                     // Wild-copy for literals when distance to output buffer end allows
                     if (literalLength >= 16 && op + literalLength <= oend - Lz4Constants.WildCopyLength)
@@ -300,16 +323,26 @@ public sealed unsafe class Lz4Codec : ICompressionCodec
                 int matchLength = tokenMatch + Lz4Constants.MinMatch;
                 if (tokenMatch == 15)
                 {
+                    long matchLenAcc = matchLength;
                     while (ip < iend && *ip == 255)
                     {
-                        matchLength += 255;
+                        matchLenAcc += 255;
                         ip++;
+                        if (matchLenAcc > (oend - op))
+                        {
+                            throw new InvalidDataException("LZ4 destination buffer too small for match copy.");
+                        }
                     }
                     if (ip >= iend) throw new InvalidDataException("LZ4 truncated match length extension.");
-                    matchLength += *ip++;
+                    matchLenAcc += *ip++;
+                    if (matchLenAcc > (oend - op))
+                    {
+                        throw new InvalidDataException("LZ4 destination buffer too small for match copy.");
+                    }
+                    matchLength = (int)matchLenAcc;
                 }
 
-                if (op + matchLength > oend) throw new InvalidDataException("LZ4 destination buffer too small for match copy.");
+                if (matchLength > (oend - op)) throw new InvalidDataException("LZ4 destination buffer too small for match copy.");
 
                 // 6. Execute Match Copy (with Overlap / RLE Handling)
                 if (offset == 1)
@@ -387,6 +420,13 @@ public sealed unsafe class Lz4Codec : ICompressionCodec
     private static int EmitLiteralOnlySequence(ReadOnlySpan<byte> source, Span<byte> destination)
     {
         int litLen = source.Length;
+        int extBytes = litLen >= 15 ? ((litLen - 15) / 255 + 1) : 0;
+        int required = 1 + extBytes + litLen;
+        if (destination.Length < required)
+        {
+            throw new ArgumentException("Destination buffer too small for LZ4 compression.", nameof(destination));
+        }
+
         int tokenL = litLen < 15 ? litLen : 15;
         int dstIdx = 0;
 

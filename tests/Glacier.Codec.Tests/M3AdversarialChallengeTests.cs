@@ -559,7 +559,7 @@ public unsafe class M3AdversarialChallengeTests
                 byte[] bTag = new byte[16];
 
                 using (var gCipher = new Aes256GcmCipher(key))
-                using (var bCipher = new BclAesGcm(key))
+                using (var bCipher = new BclAesGcm(key, 16))
                 {
                     gCipher.Encrypt(plaintext, aad, nonce, gCt, gTag);
                     bCipher.Encrypt(nonce, plaintext, bCt, bTag, aad);

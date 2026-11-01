@@ -24,6 +24,15 @@ public static class FseDecoder
     public static readonly FseTableEntry[] PredefinedMatchLengthsTable;
     public static readonly FseTableEntry[] PredefinedOffsetsTable;
 
+    // Precomputed O(1) inverse tANS transition maps for Predefined FSE encoding:
+    // Indexed by [symbol * tableSize + targetState], packed as: prevState | (nbBits << 8) | (bitsToWrite << 16).
+    internal static readonly uint[] PredefinedLLEncodeMap;
+    internal static readonly uint[] PredefinedMLEncodeMap;
+    internal static readonly uint[] PredefinedOFEncodeMap;
+    internal static readonly byte[] PredefinedLLFirstState;
+    internal static readonly byte[] PredefinedMLFirstState;
+    internal static readonly byte[] PredefinedOFFirstState;
+
     static FseDecoder()
     {
         PredefinedLiteralLengthsTable = new FseTableEntry[64];
@@ -32,6 +41,7 @@ public static class FseDecoder
             ZstdConstants.PredefinedLiteralLengthsDistribution.Length - 1,
             6,
             PredefinedLiteralLengthsTable);
+        BuildEncodeLookup(PredefinedLiteralLengthsTable, 36, 64, out PredefinedLLEncodeMap, out PredefinedLLFirstState);
 
         PredefinedMatchLengthsTable = new FseTableEntry[64];
         BuildTable(
@@ -39,6 +49,7 @@ public static class FseDecoder
             ZstdConstants.PredefinedMatchLengthsDistribution.Length - 1,
             6,
             PredefinedMatchLengthsTable);
+        BuildEncodeLookup(PredefinedMatchLengthsTable, 53, 64, out PredefinedMLEncodeMap, out PredefinedMLFirstState);
 
         PredefinedOffsetsTable = new FseTableEntry[32];
         BuildTable(
@@ -46,6 +57,36 @@ public static class FseDecoder
             ZstdConstants.PredefinedOffsetsDistribution.Length - 1,
             5,
             PredefinedOffsetsTable);
+        BuildEncodeLookup(PredefinedOffsetsTable, 29, 32, out PredefinedOFEncodeMap, out PredefinedOFFirstState);
+    }
+
+    private static void BuildEncodeLookup(
+        FseTableEntry[] decTable,
+        int symbolCount,
+        int tableSize,
+        out uint[] encodeMap,
+        out byte[] firstState)
+    {
+        encodeMap = new uint[symbolCount * tableSize];
+        firstState = new byte[symbolCount];
+        Array.Fill(firstState, (byte)0xFF);
+
+        for (int u = 0; u < tableSize; u++)
+        {
+            var entry = decTable[u];
+            if (firstState[entry.Symbol] == 0xFF)
+            {
+                firstState[entry.Symbol] = (byte)u;
+            }
+
+            int span = 1 << entry.NumBits;
+            int baseIdx = entry.Symbol * tableSize;
+            for (int lowBits = 0; lowBits < span; lowBits++)
+            {
+                int targetState = entry.NewState + lowBits;
+                encodeMap[baseIdx + targetState] = (uint)(u | (entry.NumBits << 8) | (lowBits << 16));
+            }
+        }
     }
 
     /// <summary>
@@ -149,15 +190,16 @@ public static class FseDecoder
             uint val = reader.PeekBits(width);
             int countBits;
 
-            if ((val & ((1 << (width - 1)) - 1)) < (uint)threshold)
+            uint lowMask = (1u << (width - 1)) - 1u;
+            if ((val & lowMask) < (uint)threshold)
             {
                 countBits = width - 1;
-                val = val & (uint)((1 << (width - 1)) - 1);
+                val &= lowMask;
             }
             else
             {
                 countBits = width;
-                if (val > (uint)threshold) val -= (uint)threshold;
+                if (val > lowMask) val -= (uint)threshold;
             }
 
             reader.ConsumeBits(countBits);
@@ -174,11 +216,16 @@ public static class FseDecoder
             }
             else // probability == 0
             {
-                uint repeat = reader.ReadBits(2);
-                while (repeat-- > 0 && s <= maxSymbol)
+                uint repeat;
+                do
                 {
-                    normalized[s++] = 0;
+                    repeat = reader.ReadBits(2);
+                    for (uint r = 0; r < repeat && s <= maxSymbol; r++)
+                    {
+                        normalized[s++] = 0;
+                    }
                 }
+                while (repeat == 3 && s <= maxSymbol);
             }
         }
 

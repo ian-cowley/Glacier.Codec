@@ -43,6 +43,35 @@ public sealed unsafe class CachelineAlignedBuffer : MemoryManager<byte>, IMemory
         }
     }
 
+    internal CachelineAlignedBuffer(int byteLength, bool deferNativeAllocation, byte _)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(byteLength);
+        _length = byteLength;
+        _ownsMemory = true;
+        _allocatedBytes = ((nuint)byteLength + 63) & ~(nuint)63;
+        if (!deferNativeAllocation)
+        {
+            _pointer = NativeMemory.AlignedAlloc(_allocatedBytes, CachelineAlignment);
+            NativeMemory.Clear(_pointer, _allocatedBytes);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void EnsureNativeAllocated()
+    {
+        if (_pointer == null && _allocatedBytes > 0)
+        {
+            AllocateNativeDeferred();
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void AllocateNativeDeferred()
+    {
+        _pointer = NativeMemory.AlignedAlloc(_allocatedBytes, CachelineAlignment);
+        NativeMemory.Clear(_pointer, _allocatedBytes);
+    }
+
     /// <summary>
     /// Wraps an existing unmanaged pointer aligned to 64 bytes.
     /// </summary>

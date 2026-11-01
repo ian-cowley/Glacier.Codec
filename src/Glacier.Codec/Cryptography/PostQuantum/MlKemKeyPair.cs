@@ -34,9 +34,9 @@ public readonly struct MlKemKeyPair : IDisposable
     }
 
     /// <summary>Decapsulates a shared secret from received ciphertext using this key pair's secret key.</summary>
-    public bool Decapsulate(ReadOnlySpan<byte> ciphertext, Span<byte> sharedSecret)
+    public void Decapsulate(ReadOnlySpan<byte> ciphertext, Span<byte> sharedSecret)
     {
-        return _engine.Decapsulate(_secretKey.ReadOnlySpan, ciphertext, sharedSecret);
+        _engine.Decapsulate(_secretKey.ReadOnlySpan, ciphertext, sharedSecret);
     }
 
     public void Dispose()

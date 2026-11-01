@@ -59,8 +59,7 @@ public class Tier2_PostQuantumBoundaries
         byte[] zeroCt = new byte[kem.CiphertextSizeInBytes];
         byte[] ss = new byte[32];
 
-        bool ok = kem.Decapsulate(sk, zeroCt, ss);
-        Assert.False(ok);
+        kem.Decapsulate(sk, zeroCt, ss);
         Assert.False(ss.AsSpan().SequenceEqual(new byte[32]), "Reject key must be derived pseudo-random value.");
     }
 
@@ -81,11 +80,9 @@ public class Tier2_PostQuantumBoundaries
         byte[] rejectSs1 = new byte[32];
         byte[] rejectSs2 = new byte[32];
 
-        bool ok1 = kem.Decapsulate(sk, ct, rejectSs1);
-        bool ok2 = kem.Decapsulate(sk, ct, rejectSs2);
+        kem.Decapsulate(sk, ct, rejectSs1);
+        kem.Decapsulate(sk, ct, rejectSs2);
 
-        Assert.False(ok1);
-        Assert.False(ok2);
         // Deterministic implicit rejection: same corrupted ciphertext produces same reject key
         Assert.Equal(rejectSs1, rejectSs2);
     }

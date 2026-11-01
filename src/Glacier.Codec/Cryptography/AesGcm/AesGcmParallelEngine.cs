@@ -107,7 +107,7 @@ internal static unsafe class AesGcmParallelEngine
             state.OutYHi = yHi;
             state.OutYLo = yLo;
         }
-        else if (state.Mode == 2) // Decrypt: GHASH + CTR in single pass
+        else if (state.Mode == 2) // Decrypt: GHASH only (Input is ciphertext, Output untouched)
         {
             ulong yHi = state.InitialYHi, yLo = state.InitialYLo;
             ReadOnlySpan<byte> cipherSpan = new(state.Input, state.Length);
@@ -117,7 +117,9 @@ internal static unsafe class AesGcmParallelEngine
                 AesGcmKernelPclmul.ProcessBlocks(ref yHi, ref yLo, cipherSpan, state.H1, state.H2, state.H3, state.H4);
             state.OutYHi = yHi;
             state.OutYLo = yLo;
-
+        }
+        else if (state.Mode == 3) // Decrypt: CTR only (run strictly after tag verified)
+        {
             AesGcmKernel.GctrCryptDirect(state.RoundKeys, ctr, state.Input, state.Output, state.Length);
         }
     }
@@ -158,7 +160,7 @@ internal static unsafe class AesGcmParallelEngine
         int totalBytes = plaintext.Length;
         int totalBlocks = (totalBytes + 15) / 16;
         int numWorkers = Math.Min(s_workerCount, totalBlocks / 256);
-        if (numWorkers <= 1)
+        if (!CpuCapabilities.IsX86_64 || !CpuCapabilities.HasPclmulqdq || numWorkers <= 1)
         {
             AesGcmKernel.Encrypt(roundKeys, hTable, nonce, plaintext, ciphertext, tag, associatedData);
             return;
@@ -288,7 +290,7 @@ internal static unsafe class AesGcmParallelEngine
         int totalBytes = ciphertext.Length;
         int totalBlocks = (totalBytes + 15) / 16;
         int numWorkers = Math.Min(s_workerCount, totalBlocks / 256);
-        if (numWorkers <= 1)
+        if (!CpuCapabilities.IsX86_64 || !CpuCapabilities.HasPclmulqdq || numWorkers <= 1)
         {
             return AesGcmKernel.Decrypt(roundKeys, hTable, nonce, ciphertext, expectedTag, plaintext, associatedData);
         }
@@ -334,9 +336,9 @@ internal static unsafe class AesGcmParallelEngine
 
             Vector128<ulong> yAccum;
 
-            // Single Pass: Parallel GHASH over ciphertext and CTR decryption
             lock (s_dispatchLock)
             {
+                // Phase 1: Parallel GHASH over ciphertext (plaintext destination is completely untouched)
                 s_doneEvent.Reset(numWorkers - 1);
 
                 for (int w = 0; w < numWorkers; w++)
@@ -348,7 +350,7 @@ internal static unsafe class AesGcmParallelEngine
                     ref var st = ref s_workerStates[w];
                     st.RoundKeys = rkVec;
                     st.Input = pCipher + offset;
-                    st.Output = pPlain + offset;
+                    st.Output = null; // Do NOT touch caller plaintext buffer prior to tag verification
                     st.Length = len;
                     st.StartCounter = ctrStart;
                     st.Nonce0 = j0[0]; st.Nonce1 = j0[1]; st.Nonce2 = j0[2]; st.Nonce3 = j0[3];
@@ -359,7 +361,7 @@ internal static unsafe class AesGcmParallelEngine
                     st.HasV512 = hasV512;
                     st.InitialYHi = (w == 0) ? yAadHi : 0;
                     st.InitialYLo = (w == 0) ? yAadLo : 0;
-                    st.Mode = 2; // Single-pass GHASH + CTR
+                    st.Mode = 2; // Parallel GHASH only
 
                     if (w > 0)
                     {
@@ -382,27 +384,54 @@ internal static unsafe class AesGcmParallelEngine
                     Vector128<ulong> mult = (wBlocks == chunkBlocks) ? hm : PowH(h1, wBlocks);
                     yAccum = AesGcmKernelPclmul.MulOne(yAccum, mult) ^ Vector128.Create(s_workerStates[w].OutYLo, s_workerStates[w].OutYHi);
                 }
-            }
 
-            Span<byte> lenBlock = stackalloc byte[16];
-            BinaryPrimitives.WriteUInt64BigEndian(lenBlock.Slice(0, 8), (ulong)associatedData.Length * 8);
-            BinaryPrimitives.WriteUInt64BigEndian(lenBlock.Slice(8, 8), (ulong)ciphertext.Length * 8);
+                Span<byte> lenBlock = stackalloc byte[16];
+                BinaryPrimitives.WriteUInt64BigEndian(lenBlock.Slice(0, 8), (ulong)associatedData.Length * 8);
+                BinaryPrimitives.WriteUInt64BigEndian(lenBlock.Slice(8, 8), (ulong)ciphertext.Length * 8);
 
-            ulong yHiFin = yAccum.GetElement(1);
-            ulong yLoFin = yAccum.GetElement(0);
-            AesGcmKernelPclmul.GhashBlock(ref yHiFin, ref yLoFin, lenBlock, h1);
+                ulong yHiFin = yAccum.GetElement(1);
+                ulong yLoFin = yAccum.GetElement(0);
+                AesGcmKernelPclmul.GhashBlock(ref yHiFin, ref yLoFin, lenBlock, h1);
 
-            Span<byte> computedTag = stackalloc byte[16];
-            BinaryPrimitives.WriteUInt64BigEndian(computedTag.Slice(0, 8), yHiFin);
-            BinaryPrimitives.WriteUInt64BigEndian(computedTag.Slice(8, 8), yLoFin);
+                Span<byte> computedTag = stackalloc byte[16];
+                BinaryPrimitives.WriteUInt64BigEndian(computedTag.Slice(0, 8), yHiFin);
+                BinaryPrimitives.WriteUInt64BigEndian(computedTag.Slice(8, 8), yLoFin);
 
-            for (int i = 0; i < 16; i++)
-                computedTag[i] ^= tagMask[i];
+                for (int i = 0; i < 16; i++)
+                    computedTag[i] ^= tagMask[i];
 
-            if (!CryptographicOperations.FixedTimeEquals(computedTag, expectedTag.Slice(0, 16)))
-            {
-                CryptographicOperations.ZeroMemory(plaintext.Slice(0, ciphertext.Length));
-                return false;
+                // Constant-time tag check. If invalid, zero destination buffer and abort immediately without releasing unauthenticated plaintext.
+                if (!CryptographicOperations.FixedTimeEquals(computedTag, expectedTag.Slice(0, 16)))
+                {
+                    CryptographicOperations.ZeroMemory(plaintext.Slice(0, ciphertext.Length));
+                    return false;
+                }
+
+                // Phase 2: Tag authenticated! Execute parallel CTR keystream decryption directly into destination.
+                s_doneEvent.Reset(numWorkers - 1);
+
+                for (int w = 0; w < numWorkers; w++)
+                {
+                    int offset = w * chunkBytes;
+                    int len = (w == numWorkers - 1) ? totalBytes - offset : chunkBytes;
+                    uint ctrStart = baseCounter + (uint)(w * chunkBlocks);
+
+                    ref var st = ref s_workerStates[w];
+                    st.Input = pCipher + offset;
+                    st.Output = pPlain + offset;
+                    st.Length = len;
+                    st.StartCounter = ctrStart;
+                    st.Mode = 3; // CTR decryption only
+
+                    if (w > 0)
+                    {
+                        s_startEvents[w - 1].Set();
+                    }
+                }
+
+                ExecuteWorkerJob(ref s_workerStates[0]);
+
+                s_doneEvent.Wait();
             }
 
             return true;

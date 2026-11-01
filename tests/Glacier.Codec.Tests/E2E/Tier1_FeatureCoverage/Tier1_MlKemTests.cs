@@ -31,9 +31,8 @@ public class Tier1_MlKemTests
         kem.Encapsulate(ek, ct, ssA);
 
         byte[] ssB = new byte[kem.SharedSecretSizeInBytes];
-        bool ok = kem.Decapsulate(dk, ct, ssB);
+        kem.Decapsulate(dk, ct, ssB);
 
-        Assert.True(ok, "Decapsulation must succeed for valid ciphertext.");
         Assert.Equal(ssA, ssB);
     }
 
@@ -62,9 +61,8 @@ public class Tier1_MlKemTests
         kem.Encapsulate(ek, ct, ssA);
 
         byte[] ssB = new byte[kem.SharedSecretSizeInBytes];
-        bool ok = kem.Decapsulate(dk, ct, ssB);
+        kem.Decapsulate(dk, ct, ssB);
 
-        Assert.True(ok);
         Assert.Equal(ssA, ssB);
     }
 
@@ -106,10 +104,9 @@ public class Tier1_MlKemTests
         ct[0] ^= 0x01;
 
         byte[] rejectedSs = new byte[32];
-        bool ok = kem.Decapsulate(dk, ct, rejectedSs);
+        kem.Decapsulate(dk, ct, rejectedSs);
 
-        // Decapsulate returns false, but outputs deterministic pseudo-random reject key (implicit rejection)
-        Assert.False(ok);
+        // Decapsulate performs constant-time implicit rejection, outputting deterministic pseudo-random reject key
         Assert.False(originalSs.AsSpan().SequenceEqual(rejectedSs),
             "Implicit rejection must not return the original shared secret.");
         Assert.False(rejectedSs.AsSpan().SequenceEqual(new byte[32]),
