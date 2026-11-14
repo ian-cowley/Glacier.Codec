@@ -10,6 +10,7 @@ namespace Glacier.Codec.Gpu.Tests;
 public class GpuSha256Tests
 {
     [Fact]
+    [Trait("Category", "Gpu")]
     public void Sha256Batch_MatchesCpuStandard_BitForBit()
     {
         if (!CuDriver.IsAvailable || GpuDevice.GetDeviceCount() == 0) return;
@@ -35,6 +36,7 @@ public class GpuSha256Tests
     }
 
     [Fact]
+    [Trait("Category", "Gpu")]
     public void Sha256NonceSearch_FindsValidMatches()
     {
         if (!CuDriver.IsAvailable || GpuDevice.GetDeviceCount() == 0) return;

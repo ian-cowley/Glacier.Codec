@@ -18,6 +18,7 @@ public class GpuThroughputBenchmarkTests
     }
 
     [Fact]
+    [Trait("Category", "Gpu")]
     public void Benchmark_GpuSha256_Throughput()
     {
         if (!CuDriver.IsAvailable || GpuDevice.GetDeviceCount() == 0) return;
@@ -47,6 +48,7 @@ public class GpuThroughputBenchmarkTests
     }
 
     [Fact]
+    [Trait("Category", "Gpu")]
     public void Benchmark_GpuBlake3_Throughput()
     {
         if (!CuDriver.IsAvailable || GpuDevice.GetDeviceCount() == 0) return;

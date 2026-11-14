@@ -10,6 +10,7 @@ namespace Glacier.Codec.Gpu.Tests;
 public class GpuBlake3Tests
 {
     [Fact]
+    [Trait("Category", "Gpu")]
     public void Blake3Batch_MatchesCpuStandard_BitForBit()
     {
         if (!CuDriver.IsAvailable || GpuDevice.GetDeviceCount() == 0) return;
@@ -36,6 +37,7 @@ public class GpuBlake3Tests
     }
 
     [Fact]
+    [Trait("Category", "Gpu")]
     public void Blake3NonceSearch_FindsValidMatches()
     {
         if (!CuDriver.IsAvailable || GpuDevice.GetDeviceCount() == 0) return;

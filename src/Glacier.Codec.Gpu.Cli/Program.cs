@@ -9,10 +9,113 @@ using Vortice.DXGI;
 
 namespace Glacier.Codec.Gpu.Cli;
 
+public enum CliCommand
+{
+    Bench,
+    BenchAmd,
+    Info,
+    Search,
+    Help
+}
+
+public readonly record struct CliOptions(
+    CliCommand Command,
+    string Algorithm = "blake3",
+    uint DifficultyBits = 16,
+    bool PreferD3D12 = false,
+    bool PreferAmd = false);
+
+public readonly record struct CliParseResult(bool IsSuccess, CliOptions Options, string? ErrorMessage = null);
+
 public static class Program
 {
+    public static string GetHelpText() =>
+        """
+        Usage:
+          Glacier.Codec.Gpu.Cli [command] [options]
+
+        Commands:
+          info                              Print detected CUDA and Direct3D 12 GPU devices
+          search [algo] [bits] [backend]    Run GPU nonce search (algo: blake3|sha256, bits: 0..32, backend: cuda|d3d)
+          bench [amd]                       Run GPU throughput benchmarks (default)
+          bench-amd | amd                   Run Direct3D 12 benchmarks on AMD/DXGI adapter
+          help | --help | -h                Show this help message
+        """;
+
+    public static uint ComputeDifficultyMask(uint difficultyBits) => difficultyBits switch
+    {
+        >= 32 => 0xFFFFFFFF,
+        0 => 0x00000000,
+        _ => (uint)(0xFFFFFFFFUL << (int)(32 - difficultyBits))
+    };
+
+    public static CliParseResult ParseArgs(string[]? args)
+    {
+        if (args is null || args.Length == 0)
+        {
+            return new CliParseResult(true, new CliOptions(CliCommand.Bench));
+        }
+
+        string cmd = args[0].ToLowerInvariant();
+        switch (cmd)
+        {
+            case "help":
+            case "--help":
+            case "-h":
+            case "/?":
+                return new CliParseResult(true, new CliOptions(CliCommand.Help));
+
+            case "info":
+                return new CliParseResult(true, new CliOptions(CliCommand.Info));
+
+            case "bench-amd":
+            case "amd":
+                return new CliParseResult(true, new CliOptions(CliCommand.BenchAmd, PreferAmd: true));
+
+            case "bench":
+                bool preferAmd = args.Length > 1 && args[1].Contains("amd", StringComparison.OrdinalIgnoreCase);
+                return new CliParseResult(true, new CliOptions(CliCommand.Bench, PreferAmd: preferAmd));
+
+            case "search":
+                string algo = args.Length > 1 ? args[1].ToLowerInvariant() : "blake3";
+                if (algo is not ("blake3" or "sha256"))
+                {
+                    return new CliParseResult(false, default, $"Unsupported algorithm '{args[1]}'. Expected 'blake3' or 'sha256'.");
+                }
+
+                uint diffBits = 16;
+                if (args.Length > 2)
+                {
+                    if (!uint.TryParse(args[2], out diffBits) || diffBits > 32)
+                    {
+                        return new CliParseResult(false, default, $"Invalid difficulty '{args[2]}'. Expected integer between 0 and 32.");
+                    }
+                }
+
+                bool useD3D = args.Length > 3 && args[3].Contains("d3d", StringComparison.OrdinalIgnoreCase);
+                return new CliParseResult(true, new CliOptions(CliCommand.Search, algo, diffBits, useD3D));
+
+            default:
+                return new CliParseResult(false, default, $"Unknown command '{args[0]}'. Use --help for usage.");
+        }
+    }
+
     public static int Main(string[] args)
     {
+        CliParseResult parsed = ParseArgs(args);
+        if (!parsed.IsSuccess)
+        {
+            Console.Error.WriteLine($"Error: {parsed.ErrorMessage}");
+            Console.WriteLine(GetHelpText());
+            return 1;
+        }
+
+        if (parsed.Options.Command == CliCommand.Help)
+        {
+            Console.WriteLine(GetHelpText());
+            return 0;
+        }
+
         Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine(@"
    ______ __           _                ______           __            ______            
@@ -25,37 +128,30 @@ public static class Program
 ");
         Console.ResetColor();
 
-        string cmd = args.Length > 0 ? args[0].ToLowerInvariant() : "bench";
-        bool preferAmd = args.Length > 1 && args[1].Contains("amd", StringComparison.OrdinalIgnoreCase);
-
-        switch (cmd)
+        switch (parsed.Options.Command)
         {
-            case "info":
+            case CliCommand.Info:
                 PrintAllDeviceInfo();
                 return 0;
 
-            case "search":
-                string searchAlgo = args.Length > 1 ? args[1].ToLowerInvariant() : "blake3";
-                uint diffZeros = args.Length > 2 && uint.TryParse(args[2], out uint d) ? d : 16;
-                bool useD3D = args.Length > 3 && args[3].Contains("d3d", StringComparison.OrdinalIgnoreCase);
-                if (useD3D || !CuDriver.IsAvailable || GpuDevice.GetDeviceCount() == 0)
+            case CliCommand.Search:
+                if (parsed.Options.PreferD3D12 || !CuDriver.IsAvailable || GpuDevice.GetDeviceCount() == 0)
                 {
-                    RunD3D12NonceSearch(searchAlgo, diffZeros);
+                    RunD3D12NonceSearch(parsed.Options.Algorithm, parsed.Options.DifficultyBits);
                 }
                 else
                 {
-                    RunCudaNonceSearch(searchAlgo, diffZeros);
+                    RunCudaNonceSearch(parsed.Options.Algorithm, parsed.Options.DifficultyBits);
                 }
                 return 0;
 
-            case "bench-amd":
-            case "amd":
+            case CliCommand.BenchAmd:
                 PrintD3D12Info();
                 RunD3D12Benchmark("blake3");
                 RunD3D12Benchmark("sha256");
                 return 0;
 
-            case "bench":
+            case CliCommand.Bench:
             default:
                 PrintAllDeviceInfo();
                 if (CuDriver.IsAvailable && GpuDevice.GetDeviceCount() > 0)
@@ -231,12 +327,7 @@ public static class Program
         byte[] template = new byte[64];
         Random.Shared.NextBytes(template.AsSpan(0, 60));
 
-        uint mask = difficultyBits switch
-        {
-            >= 32 => 0xFFFFFFFF,
-            0 => 0x00000000,
-            _ => (uint)(0xFFFFFFFFUL << (int)(32 - difficultyBits))
-        };
+        uint mask = ComputeDifficultyMask(difficultyBits);
 
         Console.ForegroundColor = ConsoleColor.Magenta;
         Console.WriteLine($"[CUDA Miner] Starting GPU Nonce Miner ({algo.ToUpperInvariant()}) on {dev.DeviceName}...");
@@ -309,12 +400,7 @@ public static class Program
         byte[] template = new byte[64];
         Random.Shared.NextBytes(template.AsSpan(0, 60));
 
-        uint mask = difficultyBits switch
-        {
-            >= 32 => 0xFFFFFFFF,
-            0 => 0x00000000,
-            _ => (uint)(0xFFFFFFFFUL << (int)(32 - difficultyBits))
-        };
+        uint mask = ComputeDifficultyMask(difficultyBits);
 
         Console.ForegroundColor = ConsoleColor.Magenta;
         Console.WriteLine($"[Direct3D 12 Miner] Starting GPU Nonce Miner ({algo.ToUpperInvariant()}) on {engine.AdapterName}...");

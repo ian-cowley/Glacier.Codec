@@ -31,5 +31,8 @@ jobs:
     - name: Run Tests
       run: dotnet test tests/Glacier.Codec.Tests/Glacier.Codec.Tests.csproj -c Release --no-build --verbosity normal
 
+    - name: Run Non-Hardware GPU Tests
+      run: dotnet test tests/Glacier.Codec.Gpu.Tests/Glacier.Codec.Gpu.Tests.csproj -c Release --no-build --filter "Category!=Gpu" --verbosity normal
+
     - name: Native AOT Publish Test
       run: dotnet publish src/Glacier.Codec/Glacier.Codec.csproj -c Release -r win-x64 /p:TreatWarningsAsErrors=true

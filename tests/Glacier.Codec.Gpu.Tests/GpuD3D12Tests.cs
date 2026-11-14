@@ -17,10 +17,26 @@ public class GpuD3D12Tests
         _output = output;
     }
 
+    private static GpuD3D12Engine? TryCreateD3D12Engine()
+    {
+        if (!OperatingSystem.IsWindows()) return null;
+        try
+        {
+            return new GpuD3D12Engine();
+        }
+        catch (InvalidOperationException)
+        {
+            // No hardware Direct3D 12 adapter available (e.g., headless CI runner)
+            return null;
+        }
+    }
+
     [Fact]
+    [Trait("Category", "Gpu")]
     public void D3D12Engine_DetectsAndBindsGpu()
     {
-        if (!OperatingSystem.IsWindows()) return;
+        using var engine = TryCreateD3D12Engine();
+        if (engine is null) return;
 
         using var factory = Vortice.DXGI.DXGI.CreateDXGIFactory1<Vortice.DXGI.IDXGIFactory6>();
         for (uint i = 0; factory.EnumAdapterByGpuPreference(i, Vortice.DXGI.GpuPreference.MinimumPower, out Vortice.DXGI.IDXGIAdapter1 a).Success; i++)
@@ -37,17 +53,16 @@ public class GpuD3D12Tests
             a.Dispose();
         }
 
-        using var engine = new GpuD3D12Engine();
         _output.WriteLine($"[Selected Engine] Adapter: {engine.AdapterName} | IsAmdRadeon: {engine.IsAmdRadeon}");
         Assert.NotNull(engine.AdapterName);
     }
 
     [Fact]
+    [Trait("Category", "Gpu")]
     public void D3D12Engine_Blake3NonceSearch_FindsValidMatches()
     {
-        if (!OperatingSystem.IsWindows()) return;
-
-        using var engine = new GpuD3D12Engine();
+        using var engine = TryCreateD3D12Engine();
+        if (engine is null) return;
         byte[] template = new byte[64];
         new Random(555).NextBytes(template.AsSpan(0, 60));
 
@@ -71,11 +86,11 @@ public class GpuD3D12Tests
     }
 
     [Fact]
+    [Trait("Category", "Gpu")]
     public void D3D12Engine_Sha256NonceSearch_FindsValidMatches()
     {
-        if (!OperatingSystem.IsWindows()) return;
-
-        using var engine = new GpuD3D12Engine();
+        using var engine = TryCreateD3D12Engine();
+        if (engine is null) return;
         byte[] template = new byte[64];
         new Random(666).NextBytes(template.AsSpan(0, 60));
 
@@ -98,11 +113,11 @@ public class GpuD3D12Tests
     }
 
     [Fact]
+    [Trait("Category", "Gpu")]
     public void D3D12Engine_ThroughputBenchmark()
     {
-        if (!OperatingSystem.IsWindows()) return;
-
-        using var engine = new GpuD3D12Engine();
+        using var engine = TryCreateD3D12Engine();
+        if (engine is null) return;
         byte[] template = new byte[64];
         new Random(1234).NextBytes(template.AsSpan(0, 60));
 

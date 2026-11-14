@@ -8,6 +8,7 @@ namespace Glacier.Codec.Gpu.Tests;
 public class GpuDeviceTests
 {
     [Fact]
+    [Trait("Category", "Gpu")]
     public void GpuDriver_IsAvailable_OnCudaHardware()
     {
         if (!CuDriver.IsAvailable)

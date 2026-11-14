@@ -25,5 +25,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Glacier.Codec\Glacier.Codec.csproj" />
+    <ProjectReference Include="..\..\src\Glacier.Codec.Gpu.Cli\Glacier.Codec.Gpu.Cli.csproj" />
   </ItemGroup>
 </Project>
