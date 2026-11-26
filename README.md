@@ -65,11 +65,12 @@ The library uses hardware acceleration through AVX-512, VAES, VPCLMULQDQ, SHA-NI
 
 - **Zero-Allocation Hot Paths:** Memory pools and `Span<byte>` buffers prevent heap allocation during compute operations.
 - **Hardware Cryptographic Intrinsics:** Vector kernels execute VAES 512-bit, AES-NI 128-bit, and carry-less multiplication (`Pclmulqdq`).
-- **Post-Quantum Cryptography:** Clean-room implementation of NIST FIPS 203 ML-KEM (Kyber-768 and Kyber-1024) with Number Theoretic Transforms (NTT).
+- **Nonce-Misuse & Key-Committing AEADs:** Includes RFC 8452 `AES-256-GCM-SIV`, 192-bit nonce `XChaCha20-Poly1305`, and BLAKE3 CMT-4 `CommittingAead`.
+- **Hybrid Post-Quantum Cryptography:** Clean-room NIST FIPS 203 ML-KEM (Kyber-768 and Kyber-1024), constant-time RFC 7748 X25519, and `X-Wing` hybrid KEM.
 - **Tree-Hashed Hashing:** Multi-threaded BLAKE3 tree hashing processes data across parallel vector registers at $>7\text{ GB/s}$.
 - **Stream Compression Codecs:** Pure C# LZ4 and RFC 8878 Zstandard codecs operate with multi-block streaming chunking.
 - **Native AOT Ready:** The library uses zero runtime reflection and compiles with zero warnings under Native AOT.
-- **Fail-Secure Tag Verification:** All authentication tag comparisons use constant-time operations to eliminate timing side channels.
+- **Fail-Secure Constant-Time Verification:** Constant-time tag checks, branchless FO implicit rejection, and statistical `dudect` timing-leak tests.
 
 ---
 
@@ -122,11 +123,11 @@ All metrics were captured using physical hardware execution under .NET 10 Releas
 | **BLAKE3** | Tree Hashing | **6.09 – 7.59 GB/s** | $\ge 5.0\text{ GB/s}$ | **0 Bytes** | 16-Way AVX-512 Vector Compression + Tree Reduction |
 | **xxHash3 (64-bit)** | Non-Crypto Hash | **15.34 – 16.33 GB/s** | Cache Indexing | **0 Bytes** | 64-Byte AVX-512 Vector Stripes |
 | **xxHash3 (128-bit)** | Non-Crypto Hash | **14.82 – 15.65 GB/s** | Columnar Tables | **0 Bytes** | Dual 64-Byte Vector Accumulators |
-| **SHA-256** | Cryptographic Digest | **3.89 – 4.25 GB/s** | Hardware Wire Speed | **0 Bytes** | Direct x86 SHA-NI (`Sha256Msg1`, `Msg2`, `Rnds2`) |
+| **SHA-256** | Cryptographic Digest | **3.89 – 4.25 GB/s** | Hardware Wire Speed | **0 Bytes** | ARMv8 Crypto (`Arm.Sha256`) / Unrolled Scalar (x86-64) |
 | **LZ4 Block** | Stream Compression | **15.47 – 16.83 GB/s** | High-Throughput IO | **0 Bytes** | SIMD 4-Byte Hash Match-Finder + Wild Copies |
 | **Zstandard (RFC 8878)** | Stream Compression | **9.34 – 10.05 GB/s** | Columnar Compression | **0 Bytes** | 4-Stream Huffman + FSE Sequences |
 | **Argon2id** | Memory-Hard KDF | **0.64 – 0.69 ms/hash** | $< 50\text{ ms}$ ($m=1\text{MB}, p=4$) | **0 Bytes** | AVX-512 Permutation $G$ + Slab Matrix |
-| **ML-KEM-768** | Post-Quantum KEM | **Encap: 103.0 μs / Decap: 45.9 μs** | NIST FIPS 203 | **0 Bytes** | Vectorized Montgomery NTT over $q=3329$ |
+| **ML-KEM-768** | Post-Quantum KEM | **Encap: 103.0 μs / Decap: 45.9 μs** | NIST FIPS 203 | **0 Bytes** | Constant-Time Barrett NTT + AVX-512/AVX2 Poly Arith |
 
 ---
 
@@ -191,7 +192,10 @@ The test harness runs 1,372 automated unit, boundary, and adversarial torture te
 - **RFC 9106:** 100% pass on Argon2id memory-hard KDF test suites.
 - **NIST FIPS 203:** 100% pass on ML-KEM-768 and ML-KEM-1024 ACVP Known Answer Tests, including §7.2 encapsulation key modulus bounds and §7.3 decapsulation key hash validation.
 - **RFC 8878:** 100% round-trip fidelity and bidirectional `zstd` CLI interoperability across multi-block RLE, raw, and compressed Zstandard frames.
-- **Zero Secrets Audit:** 198 source files scanned with 0 credentials detected.
+- **RFC 8452 & XChaCha20-Poly1305:** Full compliance with RFC 8452 AES-256-GCM-SIV / POLYVAL and `draft-irtf-cfrg-xchacha` test vectors, plus BLAKE3 CMT-4 key-commitment verification.
+- **RFC 7748 & X-Wing Hybrid KEM:** Full pass on RFC 7748 X25519 vectors, `X-Wing` (`ML-KEM-768 + X25519`) composition checks, and `dudect` Welch's *t*-test timing-leak assertions.
+- **Hardware Fallback Matrix:** Verified across default host intrinsics, `DOTNET_EnableAVX512=0`, `DOTNET_EnableAES=0`, and `DOTNET_EnableHWIntrinsic=0`.
+- **Zero Secrets Audit:** All source files scanned with 0 credentials detected.
 
 ---
 

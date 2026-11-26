@@ -45,9 +45,13 @@ TARGET RUNTIME: C# .NET 10 / Native AOT / Command-Line Interface & API Surface
    - [Recipe 4: Hardware SHA-256 Digesting](#recipe-4-hardware-sha-256-digesting)
    - [Recipe 5: Argon2id Memory-Hard Key Derivation](#recipe-5-argon2id-memory-hard-key-derivation)
    - [Recipe 6: Post-Quantum ML-KEM Key Encapsulation](#recipe-6-post-quantum-ml-kem-key-encapsulation)
+   - [Recipe 7: XChaCha20-Poly1305 (192-Bit Nonce) AEAD](#recipe-7-xchacha20-poly1305-192-bit-nonce-aead)
+   - [Recipe 8: AES-256-GCM-SIV (RFC 8452 Nonce-Misuse Resistant) AEAD](#recipe-8-aes-256-gcm-siv-rfc-8452-nonce-misuse-resistant-aead)
+   - [Recipe 9: BLAKE3 CMT-4 Key-Committing AEAD](#recipe-9-blake3-cmt-4-key-committing-aead)
+   - [Recipe 10: X25519 &amp; X-Wing Hybrid Post-Quantum KEM](#recipe-10-x25519--x-wing-hybrid-post-quantum-kem)
 4. [Compression Recipes](#4-compression-recipes)
-   - [Recipe 7: LZ4 Block & Frame Streaming](#recipe-7-lz4-block--frame-streaming)
-   - [Recipe 8: Zstandard Multi-Block Compression](#recipe-8-zstandard-multi-block-compression)
+   - [Recipe 11: LZ4 Block & Frame Streaming](#recipe-11-lz4-block--frame-streaming)
+   - [Recipe 12: Zstandard Multi-Block Compression](#recipe-12-zstandard-multi-block-compression)
 5. [Memory Management & Zero Allocation](#5-memory-management--zero-allocation)
 6. [Fault Isolation and Troubleshooting](#6-fault-isolation-and-troubleshooting)
 
@@ -75,13 +79,13 @@ Query host CPU instruction sets at application startup:
 using Glacier.Codec.Hardware;
 
 // Query verified CPUID vector extensions
-bool hasAvx512 = CpuCapabilities.HasAvx512;
-bool hasVaes = CpuCapabilities.HasVaes;
-bool hasShaNi = CpuCapabilities.HasShaNi;
+bool hasAvx512 = CpuCapabilities.HasAvx512F;
+bool hasVaes = CpuCapabilities.HasVectorAes;
+bool hasAesNi = CpuCapabilities.HasAesNi;
 
-Console.WriteLine($"AVX-512 Support: {hasAvx512}");
-Console.WriteLine($"Hardware VAES:   {hasVaes}");
-Console.WriteLine($"Hardware SHA-NI: {hasShaNi}");
+Console.WriteLine($"AVX-512F Support: {hasAvx512}");
+Console.WriteLine($"Hardware VAES:    {hasVaes}");
+Console.WriteLine($"Hardware AES-NI:  {hasAesNi}");
 ```
 
 ---
@@ -157,7 +161,7 @@ Blake3Hasher.Hash(buffer, digest);
 
 ### Recipe 4: Hardware SHA-256 Digesting
 
-Compute standard FIPS 180-4 digests using raw CPU SHA-NI instructions:
+Compute standard FIPS 180-4 digests using ARMv8 Crypto hardware intrinsics or unrolled x86-64 scalar execution:
 
 ```csharp
 using Glacier.Codec.Hashing.Sha256;
@@ -211,9 +215,94 @@ MlKem768.Decapsulate(secretKey, ciphertext, receiverSecret);
 
 ---
 
+### Recipe 7: XChaCha20-Poly1305 (192-Bit Nonce) AEAD
+
+Generate stateless 24-byte random nonces safely at wire speed:
+
+```csharp
+using System.Security.Cryptography;
+using Glacier.Codec.Cryptography.ChaCha20Poly1305;
+
+ReadOnlySpan<byte> key = stackalloc byte[32];
+Span<byte> nonce = stackalloc byte[24]; // 192-bit extended nonce
+RandomNumberGenerator.Fill(nonce);
+
+ReadOnlySpan<byte> plaintext = "Stateless high-volume chunk"u8;
+Span<byte> ciphertext = stackalloc byte[plaintext.Length];
+Span<byte> tag = stackalloc byte[16];
+Span<byte> decrypted = stackalloc byte[plaintext.Length];
+
+XChaCha20Poly1305.Encrypt(key, nonce, plaintext, ciphertext, tag);
+bool ok = XChaCha20Poly1305.Decrypt(key, nonce, ciphertext, tag, decrypted);
+```
+
+---
+
+### Recipe 8: AES-256-GCM-SIV (RFC 8452 Nonce-Misuse Resistant) AEAD
+
+Protect archival payloads deterministically even if a nonce is accidentally repeated:
+
+```csharp
+using Glacier.Codec.Cryptography.AesGcmSiv;
+
+ReadOnlySpan<byte> key = stackalloc byte[32];
+ReadOnlySpan<byte> nonce = stackalloc byte[12];
+ReadOnlySpan<byte> plaintext = "Deterministic SIV archival frame"u8;
+
+Span<byte> ciphertext = stackalloc byte[plaintext.Length];
+Span<byte> tag = stackalloc byte[16];
+Span<byte> decrypted = stackalloc byte[plaintext.Length];
+
+Aes256GcmSiv.Encrypt(key, nonce, plaintext, ciphertext, tag);
+bool ok = Aes256GcmSiv.Decrypt(key, nonce, ciphertext, tag, decrypted);
+```
+
+---
+
+### Recipe 9: BLAKE3 CMT-4 Key-Committing AEAD
+
+Prevent multi-key collision attacks in multi-tenant storage with 48-byte committing tags (`commitment[32] || innerTag[16]`):
+
+```csharp
+using Glacier.Codec.Cryptography.CommittingAead;
+
+ReadOnlySpan<byte> masterKey = stackalloc byte[32];
+ReadOnlySpan<byte> nonce = stackalloc byte[12]; // 24 bytes for XChaCha20Poly1305
+ReadOnlySpan<byte> plaintext = "Multi-tenant storage block"u8;
+
+Span<byte> ciphertext = stackalloc byte[plaintext.Length];
+Span<byte> tag = stackalloc byte[CommittingAead.TagSize]; // 48 bytes
+Span<byte> decrypted = stackalloc byte[plaintext.Length];
+
+CommittingAead.Encrypt(masterKey, nonce, plaintext, ciphertext, tag,
+    associatedData: "tenant-42"u8, algorithm: CommittingAeadAlgorithm.Aes256GcmSiv);
+bool ok = CommittingAead.Decrypt(masterKey, nonce, ciphertext, tag, decrypted,
+    associatedData: "tenant-42"u8, algorithm: CommittingAeadAlgorithm.Aes256GcmSiv);
+```
+
+---
+
+### Recipe 10: X25519 & X-Wing Hybrid Post-Quantum KEM
+
+Combine NIST FIPS 203 ML-KEM-768 and RFC 7748 X25519 via `X-Wing` (`draft-connolly-cfrg-xwing-kem`):
+
+```csharp
+using Glacier.Codec.Cryptography.PostQuantum;
+
+using XWingKeyPair kp = XWing.Instance.CreateKeyPair(); // 1216B pk, 32B SecureMemory seed sk
+Span<byte> ciphertext = stackalloc byte[XWing.CiphertextBytes]; // 1120 bytes
+Span<byte> senderSecret = stackalloc byte[XWing.SharedSecretBytes];
+Span<byte> recipientSecret = stackalloc byte[XWing.SharedSecretBytes];
+
+XWing.EncapsulateSecret(kp.PublicKey, ciphertext, senderSecret);
+kp.Decapsulate(ciphertext, recipientSecret);
+```
+
+---
+
 ## 4. Compression Recipes
 
-### Recipe 7: LZ4 Block & Frame Streaming
+### Recipe 11: LZ4 Block & Frame Streaming
 
 Compress and decompress data at $>15\text{ GB/s}$ throughput:
 
@@ -231,7 +320,7 @@ int decompressedBytes = Lz4Codec.Decompress(compressed.Slice(0, compressedBytes)
 
 ---
 
-### Recipe 8: Zstandard Multi-Block Compression
+### Recipe 12: Zstandard Multi-Block Compression
 
 Compress columnar data into RFC 8878 compliant multi-block frames (LZ77 + Predefined FSE `Compressed_Block`, `RLE_Block`, and `Raw_Block`, interoperable with `zstd` CLI):
 

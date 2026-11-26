@@ -131,9 +131,11 @@ flowchart TD
     D --> D3["XxHash3"]
 
     E --> E1["Aes256Gcm"]
-    E --> E2["ChaCha20Poly1305"]
-    E --> E3["Argon2id"]
-    E --> E4["MlKemEngine"]
+    E --> E2["Aes256GcmSiv"]
+    E --> E3["ChaCha20Poly1305 / XChaCha20"]
+    E --> E4["CommittingAead (CMT-4)"]
+    E --> E5["Argon2id"]
+    E --> E6["MlKemEngine / XWing / X25519"]
 
     F --> F1["Lz4Codec"]
     F --> F2["ZstdCodec"]
@@ -190,7 +192,7 @@ deployment
 All sensitive key structures implement `IDisposable`. The `SecureMemory` class invokes `CryptographicOperations.ZeroMemory` upon disposal. The unmanaged slab pool scrubs memory blocks before returning them to the shared queue.
 
 ### 8.2 Constant-Time Security Invariants
-Authentication tag comparisons execute through `CryptographicOperations.FixedTimeEquals`. The implementation prohibits early-exit loops on secret comparison paths to prevent timing side channels.
+Authentication tag comparisons execute through `CryptographicOperations.FixedTimeEquals`. The implementation prohibits secret-dependent early-exit loops or secret-dependent branches (including branchless `KeccakSponge.SamplePolyCBD_2`, branchless FIPS 203 FO implicit rejection, and constant-time X25519 Montgomery ladder conditional swaps), verified statistically via a `dudect` Welch's *t*-test harness.
 
 ---
 
@@ -225,8 +227,12 @@ Authentication tag comparisons execute through `CryptographicOperations.FixedTim
 ## 12. Glossary
 
 - **AEAD:** Authenticated Encryption with Associated Data.
+- **CMT-4:** Key-committing AEAD security property binding ciphertext to key, nonce, AAD, and plaintext.
 - **DMC:** Data Module Code (S1000D documentation identifier).
 - **FSE:** Finite State Entropy (tANS compression sequence coder).
+- **GCM-SIV:** Nonce-misuse resistant deterministic AEAD defined in RFC 8452.
 - **ML-KEM:** Module-Lattice-Based Key-Encapsulation Mechanism (NIST FIPS 203).
 - **NTT:** Number Theoretic Transform.
+- **POLYVAL:** GHASH-equivalent universal hash in $GF(2^{128})$ used by AES-GCM-SIV.
 - **VAES:** Vector Advanced Encryption Standard (512-bit SIMD instructions).
+- **X-Wing:** Hybrid KEM combining ML-KEM-768 and X25519 (`draft-connolly-cfrg-xwing-kem`).

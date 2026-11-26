@@ -31,6 +31,21 @@ jobs:
     - name: Run Tests
       run: dotnet test tests/Glacier.Codec.Tests/Glacier.Codec.Tests.csproj -c Release --no-build --verbosity normal
 
+    - name: Run Tests (AVX-512 Disabled Fallback)
+      env:
+        DOTNET_EnableAVX512: '0'
+      run: dotnet test tests/Glacier.Codec.Tests/Glacier.Codec.Tests.csproj -c Release --no-build --verbosity normal
+
+    - name: Run Tests (AES-NI Disabled Fallback)
+      env:
+        DOTNET_EnableAES: '0'
+      run: dotnet test tests/Glacier.Codec.Tests/Glacier.Codec.Tests.csproj -c Release --no-build --verbosity normal
+
+    - name: Run Tests (Full Scalar Fallback)
+      env:
+        DOTNET_EnableHWIntrinsic: '0'
+      run: dotnet test tests/Glacier.Codec.Tests/Glacier.Codec.Tests.csproj -c Release --no-build --verbosity normal
+
     - name: Run Non-Hardware GPU Tests
       run: dotnet test tests/Glacier.Codec.Gpu.Tests/Glacier.Codec.Gpu.Tests.csproj -c Release --no-build --filter "Category!=Gpu" --verbosity normal
 

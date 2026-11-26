@@ -300,7 +300,7 @@ internal struct KeccakSponge
             int b2 = (val >> 2) & 1;
             int b3 = (val >> 3) & 1;
             int c0 = (b0 + b1) - (b2 + b3);
-            if (c0 < 0) c0 += 3329;
+            c0 += (c0 >> 31) & 3329;
             poly[2 * k] = (short)c0;
 
             int b4 = (val >> 4) & 1;
@@ -308,7 +308,7 @@ internal struct KeccakSponge
             int b6 = (val >> 6) & 1;
             int b7 = (val >> 7) & 1;
             int c1 = (b4 + b5) - (b6 + b7);
-            if (c1 < 0) c1 += 3329;
+            c1 += (c1 >> 31) & 3329;
             poly[2 * k + 1] = (short)c1;
         }
     }

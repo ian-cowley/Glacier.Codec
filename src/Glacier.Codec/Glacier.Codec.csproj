@@ -18,15 +18,15 @@
 
     <!-- NuGet Package Metadata -->
     <PackageId>Glacier.Codec</PackageId>
-    <Version>1.0.1</Version>
+    <Version>1.1.0</Version>
     <Authors>Ian Cowley</Authors>
     <Company>Glacier High-Performance Ecosystem</Company>
-    <Description>Enterprise ultra-high-throughput cryptographic and compression library in pure C# .NET 10 with Native AOT, hardware intrinsics (AVX-512, VAES, SHA-NI, ARMv8 Crypto), and GPU compute shader acceleration.</Description>
+    <Description>Enterprise ultra-high-throughput cryptographic and compression library in pure C# .NET 10 with Native AOT, hardware intrinsics (AVX-512, VAES, ARMv8 Crypto), X-Wing hybrid PQC (ML-KEM-768 + X25519), AES-256-GCM-SIV, XChaCha20-Poly1305, and BLAKE3 key-committing AEAD.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/ian-cowley/Glacier.Codec</PackageProjectUrl>
     <RepositoryUrl>https://github.com/ian-cowley/Glacier.Codec.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageTags>cryptography;blake3;sha256;xxhash3;aes256-gcm;chacha20-poly1305;argon2id;ml-kem;kyber;lz4;zstd;avx512;vaes;sha-ni;aot;net10;glacier</PackageTags>
+    <PackageTags>cryptography;blake3;sha256;xxhash3;aes256-gcm;aes256-gcm-siv;chacha20-poly1305;xchacha20-poly1305;committing-aead;argon2id;ml-kem;kyber;x25519;xwing;pqc;lz4;zstd;avx512;vaes;aot;net10;glacier</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 

@@ -45,7 +45,7 @@ public static class CpuCapabilities
             {
                 var (_, ebx, ecx, _) = X86Base.CpuId(7, 0);
                 s_hasShaNi = (ebx & (1 << 29)) != 0;
-                s_hasVectorAes = (ecx & (1 << 9)) != 0 && (Avx512F.IsSupported || System.Runtime.Intrinsics.X86.Aes.IsSupported);
+                s_hasVectorAes = (ecx & (1 << 9)) != 0 && Avx512F.IsSupported && System.Runtime.Intrinsics.X86.Aes.IsSupported;
             }
             catch
             {
@@ -74,7 +74,7 @@ public static class CpuCapabilities
 
     // x86-64 Cryptographic Extensions
     public static bool HasAesNi => System.Runtime.Intrinsics.X86.Aes.IsSupported;
-    public static bool HasPclmulqdq => Pclmulqdq.IsSupported;
+    public static bool HasPclmulqdq => Pclmulqdq.IsSupported && Sse2.IsSupported;
     public static bool HasPclmulqdqV256 => Pclmulqdq.V256.IsSupported;
     public static bool HasPclmulqdqV512 => Pclmulqdq.V512.IsSupported && Avx512BW.IsSupported && Vector512.IsHardwareAccelerated;
     public static bool HasVpclmulqdq => Pclmulqdq.V512.IsSupported && Avx512BW.IsSupported && Vector512.IsHardwareAccelerated;
