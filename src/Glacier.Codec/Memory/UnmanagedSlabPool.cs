@@ -59,29 +59,32 @@ public sealed unsafe class UnmanagedSlabPool : IDisposable
             maxHugeSlabs: Math.Max(64, concurrency));
         // Prewarm managed shell wrappers with deferred native allocation:
         // 0 B native RAM consumed at startup AND 0 B GC heap allocations on first concurrent Rent!
-        pool.PrewarmShells(concurrency);
+        pool.PrewarmShells(
+            smallCount: 256,
+            largeCount: Math.Max(64, concurrency),
+            hugeCount: Math.Max(64, concurrency));
         return pool;
     }
 
-    private void PrewarmShells(int count)
+    private void PrewarmShells(int smallCount, int largeCount, int hugeCount)
     {
         lock (_smallLock)
         {
-            while (_smallSlabTop < count && _smallSlabTop < _maxSmallSlabs)
+            while (_smallSlabTop < smallCount && _smallSlabTop < _maxSmallSlabs)
             {
                 _smallSlabs[_smallSlabTop++] = new CachelineAlignedBuffer(SmallSlabSize, deferNativeAllocation: true, 0);
             }
         }
         lock (_largeLock)
         {
-            while (_largeSlabTop < count && _largeSlabTop < _maxLargeSlabs)
+            while (_largeSlabTop < largeCount && _largeSlabTop < _maxLargeSlabs)
             {
                 _largeSlabs[_largeSlabTop++] = new CachelineAlignedBuffer(LargeSlabSize, deferNativeAllocation: true, 0);
             }
         }
         lock (_hugeLock)
         {
-            while (_hugeSlabTop < count && _hugeSlabTop < _maxHugeSlabs)
+            while (_hugeSlabTop < hugeCount && _hugeSlabTop < _maxHugeSlabs)
             {
                 _hugeSlabs[_hugeSlabTop++] = new CachelineAlignedBuffer(HugeSlabSize, deferNativeAllocation: true, 0);
             }

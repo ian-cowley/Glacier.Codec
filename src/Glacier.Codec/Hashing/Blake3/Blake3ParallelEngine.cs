@@ -14,7 +14,6 @@ internal static unsafe class Blake3ParallelEngine
     private static readonly int s_workerCount = Math.Max(1, Environment.ProcessorCount);
     private static readonly Thread[] s_threads = new Thread[s_workerCount - 1];
     private static readonly AutoResetEvent[] s_startEvents = new AutoResetEvent[s_workerCount - 1];
-    private static readonly ManualResetEvent s_allDoneEvent = new(false);
     private static int s_remainingWorkers;
     private static readonly WorkerState[] s_workerStates = new WorkerState[s_workerCount];
     private static readonly object s_dispatchLock = new();
@@ -71,10 +70,7 @@ internal static unsafe class Blake3ParallelEngine
             }
             finally
             {
-                if (Interlocked.Decrement(ref s_remainingWorkers) == 0)
-                {
-                    s_allDoneEvent.Set();
-                }
+                Interlocked.Decrement(ref s_remainingWorkers);
             }
         }
     }
@@ -88,11 +84,6 @@ internal static unsafe class Blake3ParallelEngine
         var spin = new SpinWait();
         while (Volatile.Read(ref s_remainingWorkers) != 0)
         {
-            if (spin.NextSpinWillYield)
-            {
-                s_allDoneEvent.WaitOne();
-                return;
-            }
             spin.SpinOnce();
         }
     }
@@ -132,7 +123,6 @@ internal static unsafe class Blake3ParallelEngine
                     int w0Count = batchesPerWorker + (extraBatches > 0 ? 1 : 0);
                     currentBatch += w0Count;
 
-                    s_allDoneEvent.Reset();
                     Volatile.Write(ref s_remainingWorkers, activeWorkers - 1);
                     for (int w = 1; w < activeWorkers; w++)
                     {

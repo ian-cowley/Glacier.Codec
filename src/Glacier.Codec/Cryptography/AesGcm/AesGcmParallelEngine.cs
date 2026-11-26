@@ -18,7 +18,6 @@ internal static unsafe class AesGcmParallelEngine
     private static readonly int s_workerCount = Math.Clamp(Environment.ProcessorCount, 1, 16);
     private static readonly Thread[] s_threads = new Thread[s_workerCount - 1];
     private static readonly AutoResetEvent[] s_startEvents = new AutoResetEvent[s_workerCount - 1];
-    private static readonly ManualResetEvent s_allDoneEvent = new(false);
     private static int s_remainingWorkers;
     private static readonly WorkerState[] s_workerStates = new WorkerState[s_workerCount];
     private static readonly object s_dispatchLock = new();
@@ -81,10 +80,7 @@ internal static unsafe class AesGcmParallelEngine
             }
             finally
             {
-                if (Interlocked.Decrement(ref s_remainingWorkers) == 0)
-                {
-                    s_allDoneEvent.Set();
-                }
+                Interlocked.Decrement(ref s_remainingWorkers);
             }
         }
     }
@@ -98,11 +94,6 @@ internal static unsafe class AesGcmParallelEngine
         var spin = new SpinWait();
         while (Volatile.Read(ref s_remainingWorkers) != 0)
         {
-            if (spin.NextSpinWillYield)
-            {
-                s_allDoneEvent.WaitOne();
-                return;
-            }
             spin.SpinOnce();
         }
     }
@@ -227,7 +218,6 @@ internal static unsafe class AesGcmParallelEngine
 
             lock (s_dispatchLock)
             {
-                s_allDoneEvent.Reset();
                 Volatile.Write(ref s_remainingWorkers, numWorkers - 1);
 
                 for (int w = 0; w < numWorkers; w++)
@@ -361,7 +351,6 @@ internal static unsafe class AesGcmParallelEngine
             lock (s_dispatchLock)
             {
                 // Phase 1: Parallel GHASH over ciphertext (plaintext destination is completely untouched)
-                s_allDoneEvent.Reset();
                 Volatile.Write(ref s_remainingWorkers, numWorkers - 1);
 
                 for (int w = 0; w < numWorkers; w++)
@@ -431,7 +420,6 @@ internal static unsafe class AesGcmParallelEngine
                 }
 
                 // Phase 2: Tag authenticated! Execute parallel CTR keystream decryption directly into destination.
-                s_allDoneEvent.Reset();
                 Volatile.Write(ref s_remainingWorkers, numWorkers - 1);
 
                 for (int w = 0; w < numWorkers; w++)
