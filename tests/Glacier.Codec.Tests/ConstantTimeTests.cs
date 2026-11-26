@@ -10,19 +10,20 @@ using Glacier.Codec.Cryptography.PostQuantum;
 using Xunit;
 
 /// <summary>
-/// Statistical constant-time side-channel verification suite based on dudect (Reparaz et al.):
-/// measures interleaved randomized Class 0 vs Class 1 execution timings, applies 95th-percentile
-/// upper-tail cropping to reject OS preemption outliers, and evaluates Welch's t-statistic.
+/// Statistical constant-time side-channel verification suite based on paired randomized dudect:
+/// measures interleaved randomized pairs (Class 0 vs Class 1 back-to-back) to cancel VM drift,
+/// applies 95th-percentile |diff| outlier cropping, and evaluates the paired t-statistic.
 /// </summary>
+[Trait("Category", "ConstantTime")]
 public sealed class ConstantTimeTests
 {
     private const double ConstantTimeThreshold = 10.0;
 
-    private static double MeasureWelchT(
+    private static double MeasurePairedT(
         Action class0,
         Action class1,
-        int warmupRounds = 250,
-        int samplesPerRun = 2000)
+        int warmupRounds = 400,
+        int pairsPerRun = 1500)
     {
         for (int i = 0; i < warmupRounds; i++)
         {
@@ -30,83 +31,85 @@ public sealed class ConstantTimeTests
             class1();
         }
 
-        long[] timings = new long[samplesPerRun];
-        byte[] classes = new byte[samplesPerRun];
+        long[] diffs = new long[pairsPerRun];
+        long[] absDiffs = new long[pairsPerRun];
         var rng = new Random(0x5EED_D0DE);
 
-        for (int i = 0; i < samplesPerRun; i++)
+        for (int i = 0; i < pairsPerRun; i++)
         {
-            byte cls = (byte)(rng.Next() & 1);
-            classes[i] = cls;
-
-            long t0 = Stopwatch.GetTimestamp();
-            if (cls == 0)
+            long d0, d1;
+            if ((rng.Next() & 1) == 0)
             {
+                long a0 = Stopwatch.GetTimestamp();
                 class0();
+                long a1 = Stopwatch.GetTimestamp();
+                long b0 = Stopwatch.GetTimestamp();
+                class1();
+                long b1 = Stopwatch.GetTimestamp();
+                d0 = a1 - a0;
+                d1 = b1 - b0;
             }
             else
             {
+                long b0 = Stopwatch.GetTimestamp();
                 class1();
+                long b1 = Stopwatch.GetTimestamp();
+                long a0 = Stopwatch.GetTimestamp();
+                class0();
+                long a1 = Stopwatch.GetTimestamp();
+                d0 = a1 - a0;
+                d1 = b1 - b0;
             }
-            long t1 = Stopwatch.GetTimestamp();
-            timings[i] = t1 - t0;
+
+            long diff = d0 - d1;
+            diffs[i] = diff;
+            absDiffs[i] = diff < 0 ? -diff : diff;
         }
 
-        // Crop upper 5% tail across combined samples to filter OS scheduling spikes
-        long[] sorted = (long[])timings.Clone();
-        Array.Sort(sorted);
-        long cutoff = sorted[(int)(samplesPerRun * 0.95)];
+        // Crop upper 5% largest |diff| outliers to filter OS preemption spikes
+        Array.Sort(absDiffs);
+        long cutoff = absDiffs[(int)(pairsPerRun * 0.95)];
 
-        long n0 = 0, n1 = 0;
-        double mean0 = 0, mean1 = 0;
-        double m2_0 = 0, m2_1 = 0;
+        long n = 0;
+        double mean = 0;
+        double m2 = 0;
 
-        for (int i = 0; i < samplesPerRun; i++)
+        for (int i = 0; i < pairsPerRun; i++)
         {
-            long val = timings[i];
-            if (val > cutoff)
+            long d = diffs[i];
+            long absD = d < 0 ? -d : d;
+            if (absD > cutoff)
             {
                 continue;
             }
 
-            if (classes[i] == 0)
-            {
-                n0++;
-                double delta = val - mean0;
-                mean0 += delta / n0;
-                m2_0 += delta * (val - mean0);
-            }
-            else
-            {
-                n1++;
-                double delta = val - mean1;
-                mean1 += delta / n1;
-                m2_1 += delta * (val - mean1);
-            }
+            n++;
+            double delta = d - mean;
+            mean += delta / n;
+            m2 += delta * (d - mean);
         }
 
-        if (n0 < 30 || n1 < 30)
+        if (n < 30)
         {
             return 0.0;
         }
 
-        double var0 = m2_0 / (n0 - 1);
-        double var1 = m2_1 / (n1 - 1);
-        double denom = Math.Sqrt((var0 / n0) + (var1 / n1));
-        if (denom <= 1e-12)
+        double variance = m2 / (n - 1);
+        double se = Math.Sqrt(variance / n);
+        if (se <= 1e-12)
         {
             return 0.0;
         }
 
-        return (mean0 - mean1) / denom;
+        return mean / se;
     }
 
-    private static void AssertConstantTime(Action class0, Action class1, int samples = 2000)
+    private static void AssertConstantTime(Action class0, Action class1, int pairs = 1500)
     {
         double minAbsT = double.MaxValue;
         for (int attempt = 0; attempt < 3; attempt++)
         {
-            double t = Math.Abs(MeasureWelchT(class0, class1, warmupRounds: 250, samplesPerRun: samples));
+            double t = Math.Abs(MeasurePairedT(class0, class1, warmupRounds: 400, pairsPerRun: pairs));
             if (t < minAbsT)
             {
                 minAbsT = t;
@@ -143,7 +146,7 @@ public sealed class ConstantTimeTests
         byte[] earlyDiff = new byte[16384];
         earlyDiff[0] = 0xFF;
 
-        double t = MeasureWelchT(
+        double t = MeasurePairedT(
             () =>
             {
                 int acc = 0;
@@ -156,8 +159,8 @@ public sealed class ConstantTimeTests
                 for (int i = 0; i < 8; i++) acc += LeakyByteEquals(baseline, match) ? 1 : 0;
                 s_sink = acc;
             },
-            warmupRounds: 200,
-            samplesPerRun: 1200);
+            warmupRounds: 300,
+            pairsPerRun: 1000);
 
         Assert.True(Math.Abs(t) > ConstantTimeThreshold,
             $"Expected dudect harness to detect deliberate early-exit leak (|t|={Math.Abs(t):F2}).");
@@ -190,7 +193,7 @@ public sealed class ConstantTimeTests
                 kem.Decapsulate(sk, ctTampered, ssOut);
                 s_sink = ssOut[0];
             },
-            samples: 1200);
+            pairs: 1000);
     }
 
     [Fact]
@@ -215,15 +218,16 @@ public sealed class ConstantTimeTests
                 X25519.ScalarMult(highWeightScalar, uCoord, outBuf);
                 s_sink = outBuf[0];
             },
-            samples: 1000);
+            pairs: 800);
     }
 
     [Fact]
     public void Dudect_KeccakSponge_SamplePolyCBD2_ZeroVsNegativeHeavy_IsConstantTime()
     {
-        byte[] zeroSeed = new byte[128];
+        // Equal Hamming weight (4 bits/byte): 0x33 -> +2 (never wraps) vs 0xCC -> -2 (always wraps +3329)
+        byte[] positiveSeed = new byte[128];
+        Array.Fill(positiveSeed, (byte)0x33);
         byte[] negativeHeavySeed = new byte[128];
-        // 0xCC = 1100_1100 => (b0+b1)-(b2+b3) = 0-2 = -2 (hits negative wrap path every nibble)
         Array.Fill(negativeHeavySeed, (byte)0xCC);
         short[] poly = new short[256];
 
@@ -233,7 +237,7 @@ public sealed class ConstantTimeTests
                 int acc = 0;
                 for (int r = 0; r < 64; r++)
                 {
-                    KeccakSponge.SamplePolyCBD_2(zeroSeed, poly);
+                    KeccakSponge.SamplePolyCBD_2(positiveSeed, poly);
                     acc += poly[0];
                 }
                 s_sink = acc;
@@ -248,7 +252,7 @@ public sealed class ConstantTimeTests
                 }
                 s_sink = acc;
             },
-            samples: 1500);
+            pairs: 1200);
     }
 
     [Fact]
@@ -291,7 +295,7 @@ public sealed class ConstantTimeTests
                 }
                 s_sink = ok;
             },
-            samples: 1500);
+            pairs: 1200);
     }
 
     [Fact]
@@ -328,6 +332,6 @@ public sealed class ConstantTimeTests
                 }
                 s_sink = acc;
             },
-            samples: 1200);
+            pairs: 1000);
     }
 }

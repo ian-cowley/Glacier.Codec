@@ -17,8 +17,9 @@ internal static unsafe class AesGcmParallelEngine
 {
     private static readonly int s_workerCount = Math.Clamp(Environment.ProcessorCount, 1, 16);
     private static readonly Thread[] s_threads = new Thread[s_workerCount - 1];
-    private static readonly ManualResetEventSlim[] s_startEvents = new ManualResetEventSlim[s_workerCount - 1];
-    private static readonly CountdownEvent s_doneEvent = new(s_workerCount - 1);
+    private static readonly AutoResetEvent[] s_startEvents = new AutoResetEvent[s_workerCount - 1];
+    private static readonly ManualResetEvent s_allDoneEvent = new(false);
+    private static int s_remainingWorkers;
     private static readonly WorkerState[] s_workerStates = new WorkerState[s_workerCount];
     private static readonly object s_dispatchLock = new();
     private static volatile bool s_shutdown;
@@ -45,7 +46,7 @@ internal static unsafe class AesGcmParallelEngine
     {
         for (int i = 0; i < s_workerCount - 1; i++)
         {
-            s_startEvents[i] = new ManualResetEventSlim(false);
+            s_startEvents[i] = new AutoResetEvent(false);
             int threadIndex = i + 1;
             s_threads[i] = new Thread(() => WorkerLoop(threadIndex))
             {
@@ -71,8 +72,7 @@ internal static unsafe class AesGcmParallelEngine
         int eventIdx = workerIndex - 1;
         while (!s_shutdown)
         {
-            s_startEvents[eventIdx].Wait();
-            s_startEvents[eventIdx].Reset();
+            s_startEvents[eventIdx].WaitOne();
             if (s_shutdown) break;
 
             try
@@ -81,8 +81,29 @@ internal static unsafe class AesGcmParallelEngine
             }
             finally
             {
-                s_doneEvent.Signal();
+                if (Interlocked.Decrement(ref s_remainingWorkers) == 0)
+                {
+                    s_allDoneEvent.Set();
+                }
             }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void WaitForWorkers()
+    {
+        if (Volatile.Read(ref s_remainingWorkers) == 0)
+            return;
+
+        var spin = new SpinWait();
+        while (Volatile.Read(ref s_remainingWorkers) != 0)
+        {
+            if (spin.NextSpinWillYield)
+            {
+                s_allDoneEvent.WaitOne();
+                return;
+            }
+            spin.SpinOnce();
         }
     }
 
@@ -206,7 +227,8 @@ internal static unsafe class AesGcmParallelEngine
 
             lock (s_dispatchLock)
             {
-                s_doneEvent.Reset(numWorkers - 1);
+                s_allDoneEvent.Reset();
+                Volatile.Write(ref s_remainingWorkers, numWorkers - 1);
 
                 for (int w = 0; w < numWorkers; w++)
                 {
@@ -239,7 +261,7 @@ internal static unsafe class AesGcmParallelEngine
                 // Worker 0 runs on calling thread
                 ExecuteWorkerJob(ref s_workerStates[0]);
 
-                s_doneEvent.Wait();
+                WaitForWorkers();
 
                 // Combine GHASH results inside lock to prevent state race under concurrency
                 Vector128<ulong> hm = PowH(h1, chunkBlocks);
@@ -339,7 +361,8 @@ internal static unsafe class AesGcmParallelEngine
             lock (s_dispatchLock)
             {
                 // Phase 1: Parallel GHASH over ciphertext (plaintext destination is completely untouched)
-                s_doneEvent.Reset(numWorkers - 1);
+                s_allDoneEvent.Reset();
+                Volatile.Write(ref s_remainingWorkers, numWorkers - 1);
 
                 for (int w = 0; w < numWorkers; w++)
                 {
@@ -371,7 +394,7 @@ internal static unsafe class AesGcmParallelEngine
 
                 ExecuteWorkerJob(ref s_workerStates[0]);
 
-                s_doneEvent.Wait();
+                WaitForWorkers();
 
                 // Combine GHASH results inside lock to prevent state race under concurrency
                 Vector128<ulong> hm = PowH(h1, chunkBlocks);
@@ -408,7 +431,8 @@ internal static unsafe class AesGcmParallelEngine
                 }
 
                 // Phase 2: Tag authenticated! Execute parallel CTR keystream decryption directly into destination.
-                s_doneEvent.Reset(numWorkers - 1);
+                s_allDoneEvent.Reset();
+                Volatile.Write(ref s_remainingWorkers, numWorkers - 1);
 
                 for (int w = 0; w < numWorkers; w++)
                 {
@@ -431,7 +455,7 @@ internal static unsafe class AesGcmParallelEngine
 
                 ExecuteWorkerJob(ref s_workerStates[0]);
 
-                s_doneEvent.Wait();
+                WaitForWorkers();
             }
 
             return true;
