@@ -121,8 +121,30 @@ public sealed class XChaCha20Poly1305Cipher : IAeadCipher
         Span<byte> tag,
         ReadOnlySpan<byte> associatedData = default)
     {
-        using var cipher = new XChaCha20Poly1305Cipher(key);
-        cipher.Encrypt(plaintext, associatedData, nonce, ciphertext, tag);
+        if (key.Length != KeySize)
+            throw new ArgumentException($"XChaCha20-Poly1305 key must be exactly {KeySize} bytes (received {key.Length}).", nameof(key));
+        if (nonce.Length != NonceSize)
+            throw new ArgumentException($"Nonce must be exactly {NonceSize} bytes (received {nonce.Length}).", nameof(nonce));
+        if (tag.Length < TagSize)
+            throw new ArgumentException($"Tag destination buffer must be at least {TagSize} bytes (received {tag.Length}).", nameof(tag));
+        if (ciphertext.Length < plaintext.Length)
+            throw new ArgumentException($"Ciphertext destination buffer too small ({ciphertext.Length} bytes) for plaintext ({plaintext.Length} bytes).", nameof(ciphertext));
+
+        Span<byte> subkey = stackalloc byte[32];
+        Span<byte> chachaNonce = stackalloc byte[12];
+        try
+        {
+            ChaCha20KernelScalar.HChaCha20(key, nonce.Slice(0, 16), subkey);
+            chachaNonce.Slice(0, 4).Clear();
+            nonce.Slice(16, 8).CopyTo(chachaNonce.Slice(4, 8));
+
+            ChaCha20Kernel.Encrypt(subkey, chachaNonce, plaintext, ciphertext, tag, associatedData);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(subkey);
+            CryptographicOperations.ZeroMemory(chachaNonce);
+        }
     }
 
     public static bool Decrypt(
@@ -133,8 +155,30 @@ public sealed class XChaCha20Poly1305Cipher : IAeadCipher
         Span<byte> plaintext,
         ReadOnlySpan<byte> associatedData = default)
     {
-        using var cipher = new XChaCha20Poly1305Cipher(key);
-        return cipher.Decrypt(ciphertext, associatedData, nonce, tag, plaintext);
+        if (key.Length != KeySize)
+            throw new ArgumentException($"XChaCha20-Poly1305 key must be exactly {KeySize} bytes (received {key.Length}).", nameof(key));
+        if (nonce.Length != NonceSize)
+            throw new ArgumentException($"Nonce must be exactly {NonceSize} bytes (received {nonce.Length}).", nameof(nonce));
+        if (tag.Length < TagSize)
+            throw new ArgumentException($"Tag buffer must be at least {TagSize} bytes (received {tag.Length}).", nameof(tag));
+        if (plaintext.Length < ciphertext.Length)
+            throw new ArgumentException($"Plaintext destination buffer too small ({plaintext.Length} bytes) for ciphertext ({ciphertext.Length} bytes).", nameof(plaintext));
+
+        Span<byte> subkey = stackalloc byte[32];
+        Span<byte> chachaNonce = stackalloc byte[12];
+        try
+        {
+            ChaCha20KernelScalar.HChaCha20(key, nonce.Slice(0, 16), subkey);
+            chachaNonce.Slice(0, 4).Clear();
+            nonce.Slice(16, 8).CopyTo(chachaNonce.Slice(4, 8));
+
+            return ChaCha20Kernel.Decrypt(subkey, chachaNonce, ciphertext, tag, plaintext, associatedData);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(subkey);
+            CryptographicOperations.ZeroMemory(chachaNonce);
+        }
     }
 
     public void Dispose()

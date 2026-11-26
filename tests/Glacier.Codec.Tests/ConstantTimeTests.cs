@@ -293,4 +293,41 @@ public sealed class ConstantTimeTests
             },
             samples: 1500);
     }
+
+    [Fact]
+    public void Dudect_AesGcmKernelScalar_BitslicedEncryptBlock_ZeroVsHighEntropy_IsConstantTime()
+    {
+        byte[] rkZero = new byte[240];
+        byte[] rkRandom = new byte[240];
+        RandomNumberGenerator.Fill(rkRandom);
+
+        byte[] zeroBlock = new byte[16];
+        byte[] randomBlock = new byte[16];
+        RandomNumberGenerator.Fill(randomBlock);
+
+        byte[] dst = new byte[16];
+
+        AssertConstantTime(
+            () =>
+            {
+                int acc = 0;
+                for (int r = 0; r < 8; r++)
+                {
+                    AesGcmKernelScalar.EncryptBlock(rkZero, zeroBlock, dst);
+                    acc += dst[0];
+                }
+                s_sink = acc;
+            },
+            () =>
+            {
+                int acc = 0;
+                for (int r = 0; r < 8; r++)
+                {
+                    AesGcmKernelScalar.EncryptBlock(rkRandom, randomBlock, dst);
+                    acc += dst[0];
+                }
+                s_sink = acc;
+            },
+            samples: 1200);
+    }
 }

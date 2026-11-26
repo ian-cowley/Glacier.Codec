@@ -203,10 +203,15 @@ Authentication tag comparisons execute through `CryptographicOperations.FixedTim
 - **Decision:** Implement bare-metal x86 instructions (`Sha256Msg1`, `Pclmulqdq`, `VAES`) directly in C#.
 - **Consequences:** Eliminates runtime allocations; achieves 12.61 GB/s AES-GCM throughput.
 
-### ADR-02: Stack-Allocated NTT Ring Arithmetic for ML-KEM
+### ADR-02: Stack-Allocated Vectorized Montgomery NTT Ring Arithmetic for ML-KEM
 - **Context:** Polynomial arithmetic in post-quantum cryptography requires hundreds of ring operations.
-- **Decision:** Stack-allocate all $R_q$ polynomial arrays ($256 \times 2\text{ bytes} = 512\text{ bytes}$).
-- **Consequences:** Enforces 0 bytes heap allocation during post-quantum key encapsulation.
+- **Decision:** Stack-allocate all $R_q$ polynomial arrays ($256 \times 2\text{ bytes} = 512\text{ bytes}$) and execute `ForwardNtt`, `InverseNtt`, and `MultiplyNTTs` via AVX-512 (`Avx512BW`) and AVX2 (`Avx2`) Montgomery reductions with bit-exact constant-time scalar parity.
+- **Consequences:** Enforces 0 bytes heap allocation and halves ML-KEM-768 encapsulation latency (`49.9 μs`).
+
+### ADR-03: Bitsliced Constant-Time Scalar AES-256 Fallback
+- **Context:** Classic scalar AES implementations use a 256-byte `SBox` lookup table vulnerable to cache-timing attacks when hardware AES-NI / ARMv8 Crypto is absent or masked.
+- **Decision:** Implement algebraic $GF(2^8)$ inversion ($x^{254}$) and FIPS 197 affine transformation bitsliced across 16 bytes in parallel (`AesGcmKernelScalar`).
+- **Consequences:** Eliminates all secret-indexed memory lookups and secret-dependent branches on scalar fallback paths, verified via exhaustive 256-entry FIPS 197 parity and `dudect` Welch's *t*-tests.
 
 ---
 

@@ -332,6 +332,74 @@ public sealed unsafe class Tier5AdversarialHardwareArbiterTests
     }
 
     [Fact]
+    public void Arb19_MlKem_ForwardInverseMultiplyNtt_Vector_Scalar_Parity()
+    {
+        short[][] testInputs =
+        [
+            new short[256], // All zeros
+            new short[256], // Max coefficient 3328
+            new short[256]  // Random
+        ];
+        Array.Fill(testInputs[1], (short)3328);
+        for (int i = 0; i < 256; i++)
+        {
+            testInputs[2][i] = (short)Random.Shared.Next(0, 3329);
+        }
+
+        short[] g = new short[256];
+        for (int i = 0; i < 256; i++)
+        {
+            g[i] = (short)Random.Shared.Next(0, 3329);
+        }
+
+        short[] gNttScalar = (short[])g.Clone();
+        NttTransformScalar.ForwardNtt(gNttScalar, NttTransform.Zetas);
+
+        foreach (short[] poly in testInputs)
+        {
+            short[] fwdScalar = (short[])poly.Clone();
+            NttTransformScalar.ForwardNtt(fwdScalar, NttTransform.Zetas);
+
+            short[] mulScalar = new short[256];
+            NttTransformScalar.MultiplyNTTs(fwdScalar, gNttScalar, mulScalar, NttTransform.Gammas);
+
+            short[] invScalar = (short[])fwdScalar.Clone();
+            NttTransformScalar.InverseNtt(invScalar, NttTransform.Zetas);
+            Assert.Equal(poly, invScalar);
+
+            if (CpuCapabilities.HasAvx2)
+            {
+                short[] fwdAvx2 = (short[])poly.Clone();
+                NttTransformAvx2.ForwardNtt(fwdAvx2, NttTransform.ZetasMont);
+                Assert.Equal(fwdScalar, fwdAvx2);
+
+                short[] mulAvx2 = new short[256];
+                NttTransformAvx2.MultiplyNTTs(fwdAvx2, gNttScalar, mulAvx2, NttTransform.GammasMont);
+                Assert.Equal(mulScalar, mulAvx2);
+
+                short[] invAvx2 = (short[])fwdAvx2.Clone();
+                NttTransformAvx2.InverseNtt(invAvx2, NttTransform.ZetasMont, NttTransform.Inv128Mont);
+                Assert.Equal(poly, invAvx2);
+            }
+
+            if (CpuCapabilities.HasAvx512BW && CpuCapabilities.HasVector512)
+            {
+                short[] fwd512 = (short[])poly.Clone();
+                NttTransformAvx512.ForwardNtt(fwd512, NttTransform.ZetasMont);
+                Assert.Equal(fwdScalar, fwd512);
+
+                short[] mul512 = new short[256];
+                NttTransformAvx512.MultiplyNTTs(fwd512, gNttScalar, mul512, NttTransform.GammasMont);
+                Assert.Equal(mulScalar, mul512);
+
+                short[] inv512 = (short[])fwd512.Clone();
+                NttTransformAvx512.InverseNtt(inv512, NttTransform.ZetasMont, NttTransform.Inv128Mont);
+                Assert.Equal(poly, inv512);
+            }
+        }
+    }
+
+    [Fact]
     public void Arb18_CpuCapabilities_Invariants_Hold()
     {
         Assert.True(CpuCapabilities.LogicalCoreCount > 0);

@@ -8,6 +8,7 @@ using Glacier.Codec.Cryptography;
 using Glacier.Codec.Cryptography.AesGcm;
 using Glacier.Codec.Cryptography.AesGcmSiv;
 using Glacier.Codec.Cryptography.ChaCha20Poly1305;
+using Glacier.Codec.Hardware;
 using Glacier.Codec.Hashing.Blake3;
 using Glacier.Codec.Memory;
 
@@ -68,7 +69,7 @@ public sealed class CommittingAeadCipher : IAeadCipher
             switch (_algorithm)
             {
                 case CommittingAeadAlgorithm.Aes256Gcm:
-                    Aes256Gcm.Encrypt(subKey, nonce, plaintext, ciphertext, innerTag, associatedData);
+                    EncryptAes256GcmZeroAlloc(subKey, nonce, plaintext, ciphertext, innerTag, associatedData);
                     break;
                 case CommittingAeadAlgorithm.XChaCha20Poly1305:
                     XChaCha20Poly1305.Encrypt(subKey, nonce, plaintext, ciphertext, innerTag, associatedData);
@@ -114,7 +115,7 @@ public sealed class CommittingAeadCipher : IAeadCipher
             ReadOnlySpan<byte> innerTag = tag.Slice(CommitmentSize, InnerTagSize);
             return _algorithm switch
             {
-                CommittingAeadAlgorithm.Aes256Gcm => Aes256Gcm.Decrypt(subKey, nonce, ciphertext, innerTag, plaintext, associatedData),
+                CommittingAeadAlgorithm.Aes256Gcm => DecryptAes256GcmZeroAlloc(subKey, nonce, ciphertext, innerTag, plaintext, associatedData),
                 CommittingAeadAlgorithm.XChaCha20Poly1305 => XChaCha20Poly1305.Decrypt(subKey, nonce, ciphertext, innerTag, plaintext, associatedData),
                 CommittingAeadAlgorithm.Aes256GcmSiv => Aes256GcmSiv.Decrypt(subKey, nonce, ciphertext, innerTag, plaintext, associatedData),
                 _ => false
@@ -123,6 +124,66 @@ public sealed class CommittingAeadCipher : IAeadCipher
         finally
         {
             CryptographicOperations.ZeroMemory(derived);
+        }
+    }
+
+    private static void EncryptAes256GcmZeroAlloc(
+        ReadOnlySpan<byte> key,
+        ReadOnlySpan<byte> nonce,
+        ReadOnlySpan<byte> plaintext,
+        Span<byte> ciphertext,
+        Span<byte> tag,
+        ReadOnlySpan<byte> associatedData)
+    {
+        Span<byte> expandedKeys = stackalloc byte[Aes256GcmCipher.ExpandedKeyBytes];
+        Span<byte> hTable = stackalloc byte[Aes256GcmCipher.HTableBytes];
+        try
+        {
+            AesGcmKernel.ExpandKey(key, expandedKeys);
+            AesGcmKernel.PrecomputeHTable(expandedKeys, hTable);
+
+            if (plaintext.Length >= 256 * 1024 && Environment.ProcessorCount > 1 && CpuCapabilities.IsX86_64 && CpuCapabilities.HasPclmulqdq)
+            {
+                AesGcmParallelEngine.EncryptParallel(expandedKeys, hTable, nonce, plaintext, ciphertext, tag, associatedData);
+            }
+            else
+            {
+                AesGcmKernel.Encrypt(expandedKeys, hTable, nonce, plaintext, ciphertext, tag, associatedData);
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(expandedKeys);
+            CryptographicOperations.ZeroMemory(hTable);
+        }
+    }
+
+    private static bool DecryptAes256GcmZeroAlloc(
+        ReadOnlySpan<byte> key,
+        ReadOnlySpan<byte> nonce,
+        ReadOnlySpan<byte> ciphertext,
+        ReadOnlySpan<byte> tag,
+        Span<byte> plaintext,
+        ReadOnlySpan<byte> associatedData)
+    {
+        Span<byte> expandedKeys = stackalloc byte[Aes256GcmCipher.ExpandedKeyBytes];
+        Span<byte> hTable = stackalloc byte[Aes256GcmCipher.HTableBytes];
+        try
+        {
+            AesGcmKernel.ExpandKey(key, expandedKeys);
+            AesGcmKernel.PrecomputeHTable(expandedKeys, hTable);
+
+            if (ciphertext.Length >= 256 * 1024 && Environment.ProcessorCount > 1 && CpuCapabilities.IsX86_64 && CpuCapabilities.HasPclmulqdq)
+            {
+                return AesGcmParallelEngine.DecryptParallel(expandedKeys, hTable, nonce, ciphertext, tag, plaintext, associatedData);
+            }
+
+            return AesGcmKernel.Decrypt(expandedKeys, hTable, nonce, ciphertext, tag, plaintext, associatedData);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(expandedKeys);
+            CryptographicOperations.ZeroMemory(hTable);
         }
     }
 

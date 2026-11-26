@@ -70,7 +70,7 @@ The library uses hardware acceleration through AVX-512, VAES, VPCLMULQDQ, SHA-NI
 - **Tree-Hashed Hashing:** Multi-threaded BLAKE3 tree hashing processes data across parallel vector registers at $>7\text{ GB/s}$.
 - **Stream Compression Codecs:** Pure C# LZ4 and RFC 8878 Zstandard codecs operate with multi-block streaming chunking.
 - **Native AOT Ready:** The library uses zero runtime reflection and compiles with zero warnings under Native AOT.
-- **Fail-Secure Constant-Time Verification:** Constant-time tag checks, branchless FO implicit rejection, and statistical `dudect` timing-leak tests.
+- **Fail-Secure Constant-Time Verification:** Constant-time tag checks, bitsliced S-box scalar AES-256 fallback (zero lookup tables), branchless FO implicit rejection, and statistical `dudect` timing-leak tests.
 
 ---
 
@@ -127,7 +127,12 @@ All metrics were captured using physical hardware execution under .NET 10 Releas
 | **LZ4 Block** | Stream Compression | **15.47 – 16.83 GB/s** | High-Throughput IO | **0 Bytes** | SIMD 4-Byte Hash Match-Finder + Wild Copies |
 | **Zstandard (RFC 8878)** | Stream Compression | **9.34 – 10.05 GB/s** | Columnar Compression | **0 Bytes** | 4-Stream Huffman + FSE Sequences |
 | **Argon2id** | Memory-Hard KDF | **0.64 – 0.69 ms/hash** | $< 50\text{ ms}$ ($m=1\text{MB}, p=4$) | **0 Bytes** | AVX-512 Permutation $G$ + Slab Matrix |
-| **ML-KEM-768** | Post-Quantum KEM | **Encap: 103.0 μs / Decap: 45.9 μs** | NIST FIPS 203 | **0 Bytes** | Constant-Time Barrett NTT + AVX-512/AVX2 Poly Arith |
+| **ML-KEM-768** | Post-Quantum KEM | **KeyGen: 43.1 μs / Encap: 49.9 μs / Decap: 53.6 μs** | NIST FIPS 203 | **0 Bytes** | AVX-512 / AVX2 Montgomery NTT over $q=3329$ |
+| **X25519** | Classical ECDH | **ScalarMult: 168.6 μs** | RFC 7748 | **0 Bytes** | Constant-Time 5×51-bit GF($2^{255}-19$) Ladder |
+| **X-Wing** | Hybrid PQC KEM | **Encap: 363.2 μs / Decap: 383.3 μs** | ML-KEM-768 + X25519 | **0 Bytes** | SHA3-256 Combiner + Vectorized ML-KEM-768 |
+| **AES-256-GCM-SIV** | Nonce-Misuse AEAD | **1.63 GB/s** | RFC 8452 | **0 Bytes** | AES-NI 4-Way CTR + PCLMULQDQ POLYVAL |
+| **XChaCha20-Poly1305** | 192-Bit Nonce AEAD | **0.20 GB/s** | `draft-irtf-cfrg-xchacha` | **0 Bytes** | HChaCha20 Subkey + SIMD ChaCha20-Poly1305 |
+| **CommittingAead** | CMT-4 Key-Committing | **10.24 GB/s** *(AES-GCM)* | Multi-Tenant Safe | **0 Bytes** | BLAKE3 Keyed CMT-4 + Zero-Alloc AEAD Dispatch |
 
 ---
 

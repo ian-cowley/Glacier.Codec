@@ -6,7 +6,10 @@ using System.Text;
 using Glacier.Codec.Compression.Lz4;
 using Glacier.Codec.Compression.Zstd;
 using Glacier.Codec.Cryptography.AesGcm;
+using Glacier.Codec.Cryptography.AesGcmSiv;
 using Glacier.Codec.Cryptography.ChaCha20Poly1305;
+using Glacier.Codec.Cryptography.CommittingAead;
+using Glacier.Codec.Cryptography.EllipticCurve;
 using Glacier.Codec.Cryptography.Kdf;
 using Glacier.Codec.Cryptography.PostQuantum;
 using Glacier.Codec.Hashing.Blake3;
@@ -50,14 +53,16 @@ public static class DirectBenchmarkRunner
         // 4. xxHash3 (64-bit and 128-bit)
         RunXxHash3Benchmark();
 
-        // 5. ChaCha20-Poly1305
+        // 5. ChaCha20-Poly1305 & Modern AEADs
         RunChaCha20Poly1305Benchmark();
+        RunModernAeadBenchmarks();
 
         // 6. Argon2id RFC 9106
         RunArgon2idBenchmark();
 
-        // 7. ML-KEM FIPS 203 (KeyGen, Encaps, Decaps)
+        // 7. ML-KEM FIPS 203 & Hybrid X-Wing / X25519
         RunMlKemBenchmark();
+        RunXWingAndX25519Benchmark();
 
         // 8. LZ4 & Zstd Compression / Decompression
         RunCompressionBenchmark();
@@ -200,7 +205,10 @@ public static class DirectBenchmarkRunner
         string status = allocPerOp == 0 ? "PASS" : "WARN";
         if (status != "PASS") s_allPassed = false;
 
-        Console.WriteLine($"{"SHA-256 (SHA-NI Accelerated)",-36} | {"1 MB",-10} | {$"{gbPerSec:F2} GB/s",-22} | {$"{allocPerOp} B",-10} | {status,-6}");
+        string shaLabel = (CpuCapabilities.IsArm64 && CpuCapabilities.HasArm64Sha256)
+            ? "SHA-256 (ARMv8 Crypto)"
+            : "SHA-256 (Unrolled Scalar)";
+        Console.WriteLine($"{shaLabel,-36} | {"1 MB",-10} | {$"{gbPerSec:F2} GB/s",-22} | {$"{allocPerOp} B",-10} | {status,-6}");
     }
 
     private static void RunXxHash3Benchmark()
@@ -400,6 +408,117 @@ public static class DirectBenchmarkRunner
         status = allocDecaps == 0 ? "PASS" : "WARN";
         if (status != "PASS") s_allPassed = false;
         Console.WriteLine($"{"ML-KEM-768 Decapsulate",-36} | {"FIPS 203",-10} | {$"{usDecaps:F1} us ({iters / sw.Elapsed.TotalSeconds:F0} op/s)",-22} | {$"{allocDecaps} B",-10} | {status,-6}");
+    }
+
+    private static void RunModernAeadBenchmarks()
+    {
+        const int size1Mb = 1024 * 1024;
+        byte[] key = new byte[32];
+        byte[] nonce12 = new byte[12];
+        byte[] nonce24 = new byte[24];
+        byte[] plaintext = new byte[size1Mb];
+        byte[] ciphertext = new byte[size1Mb];
+        byte[] tag16 = new byte[16];
+        byte[] tag48 = new byte[CommittingAead.TagSize];
+        byte[] decrypted = new byte[size1Mb];
+        Random.Shared.NextBytes(key);
+        Random.Shared.NextBytes(nonce12);
+        Random.Shared.NextBytes(nonce24);
+        Random.Shared.NextBytes(plaintext);
+
+        var sw = new Stopwatch();
+        const int iters = 50;
+        double totalGb = (double)size1Mb * iters / (1024 * 1024 * 1024);
+
+        using (var xchacha = new XChaCha20Poly1305Cipher(key))
+        {
+            xchacha.Encrypt(plaintext, default, nonce24, ciphertext, tag16);
+            long allocBefore = GC.GetAllocatedBytesForCurrentThread();
+            sw.Restart();
+            for (int i = 0; i < iters; i++) xchacha.Encrypt(plaintext, default, nonce24, ciphertext, tag16);
+            sw.Stop();
+            long allocPerOp = (GC.GetAllocatedBytesForCurrentThread() - allocBefore) / iters;
+            string status = allocPerOp == 0 ? "PASS" : "WARN";
+            if (status != "PASS") s_allPassed = false;
+            Console.WriteLine($"{"XChaCha20-Poly1305 Encrypt",-36} | {"1 MB",-10} | {$"{totalGb / sw.Elapsed.TotalSeconds:F2} GB/s",-22} | {$"{allocPerOp} B",-10} | {status,-6}");
+        }
+
+        using (var gcmSiv = new Aes256GcmSivCipher(key))
+        {
+            gcmSiv.Encrypt(plaintext, default, nonce12, ciphertext, tag16);
+            long allocBefore = GC.GetAllocatedBytesForCurrentThread();
+            sw.Restart();
+            for (int i = 0; i < iters; i++) gcmSiv.Encrypt(plaintext, default, nonce12, ciphertext, tag16);
+            sw.Stop();
+            long allocPerOp = (GC.GetAllocatedBytesForCurrentThread() - allocBefore) / iters;
+            string status = allocPerOp == 0 ? "PASS" : "WARN";
+            if (status != "PASS") s_allPassed = false;
+            Console.WriteLine($"{"AES-256-GCM-SIV Encrypt (RFC 8452)",-36} | {"1 MB",-10} | {$"{totalGb / sw.Elapsed.TotalSeconds:F2} GB/s",-22} | {$"{allocPerOp} B",-10} | {status,-6}");
+        }
+
+        using (var committing = new CommittingAeadCipher(key, CommittingAeadAlgorithm.Aes256Gcm))
+        {
+            committing.Encrypt(plaintext, default, nonce12, ciphertext, tag48);
+            long allocBefore = GC.GetAllocatedBytesForCurrentThread();
+            sw.Restart();
+            for (int i = 0; i < iters; i++) committing.Encrypt(plaintext, default, nonce12, ciphertext, tag48);
+            sw.Stop();
+            long allocPerOp = (GC.GetAllocatedBytesForCurrentThread() - allocBefore) / iters;
+            string status = allocPerOp == 0 ? "PASS" : "WARN";
+            if (status != "PASS") s_allPassed = false;
+            Console.WriteLine($"{"CommittingAead (CMT-4 AES-GCM)",-36} | {"1 MB",-10} | {$"{totalGb / sw.Elapsed.TotalSeconds:F2} GB/s",-22} | {$"{allocPerOp} B",-10} | {status,-6}");
+        }
+    }
+
+    private static void RunXWingAndX25519Benchmark()
+    {
+        byte[] xSk = new byte[X25519.KeySize];
+        byte[] xPk = new byte[X25519.KeySize];
+        byte[] xOut = new byte[X25519.KeySize];
+        X25519.GenerateKeyPair(xPk, xSk);
+
+        byte[] pk = new byte[XWing.PublicKeyBytes];
+        byte[] sk = new byte[XWing.SecretKeyBytes];
+        byte[] ct = new byte[XWing.CiphertextBytes];
+        byte[] ss = new byte[XWing.SharedSecretBytes];
+        XWing.GenerateKeys(pk, sk);
+        XWing.EncapsulateSecret(pk, ct, ss);
+
+        var sw = new Stopwatch();
+        const int iters = 1000;
+
+        X25519.ScalarMult(xSk, xPk, xOut);
+        long allocBefore = GC.GetAllocatedBytesForCurrentThread();
+        sw.Restart();
+        for (int i = 0; i < iters; i++) X25519.ScalarMult(xSk, xPk, xOut);
+        sw.Stop();
+        long allocPerOp = (GC.GetAllocatedBytesForCurrentThread() - allocBefore) / iters;
+        double usX25519 = (sw.Elapsed.TotalMilliseconds * 1000.0) / iters;
+        string status = allocPerOp == 0 ? "PASS" : "WARN";
+        if (status != "PASS") s_allPassed = false;
+        Console.WriteLine($"{"X25519 ScalarMult",-36} | {"RFC 7748",-10} | {$"{usX25519:F1} us ({iters / sw.Elapsed.TotalSeconds:F0} op/s)",-22} | {$"{allocPerOp} B",-10} | {status,-6}");
+
+        XWing.EncapsulateSecret(pk, ct, ss);
+        allocBefore = GC.GetAllocatedBytesForCurrentThread();
+        sw.Restart();
+        for (int i = 0; i < iters; i++) XWing.EncapsulateSecret(pk, ct, ss);
+        sw.Stop();
+        allocPerOp = (GC.GetAllocatedBytesForCurrentThread() - allocBefore) / iters;
+        double usEncaps = (sw.Elapsed.TotalMilliseconds * 1000.0) / iters;
+        status = allocPerOp == 0 ? "PASS" : "WARN";
+        if (status != "PASS") s_allPassed = false;
+        Console.WriteLine($"{"X-Wing Encapsulate",-36} | {"Hybrid PQC",-10} | {$"{usEncaps:F1} us ({iters / sw.Elapsed.TotalSeconds:F0} op/s)",-22} | {$"{allocPerOp} B",-10} | {status,-6}");
+
+        XWing.DecapsulateSecret(sk, ct, ss);
+        allocBefore = GC.GetAllocatedBytesForCurrentThread();
+        sw.Restart();
+        for (int i = 0; i < iters; i++) XWing.DecapsulateSecret(sk, ct, ss);
+        sw.Stop();
+        allocPerOp = (GC.GetAllocatedBytesForCurrentThread() - allocBefore) / iters;
+        double usDecaps = (sw.Elapsed.TotalMilliseconds * 1000.0) / iters;
+        status = allocPerOp == 0 ? "PASS" : "WARN";
+        if (status != "PASS") s_allPassed = false;
+        Console.WriteLine($"{"X-Wing Decapsulate",-36} | {"Hybrid PQC",-10} | {$"{usDecaps:F1} us ({iters / sw.Elapsed.TotalSeconds:F0} op/s)",-22} | {$"{allocPerOp} B",-10} | {status,-6}");
     }
 
     private static void RunCompressionBenchmark()
