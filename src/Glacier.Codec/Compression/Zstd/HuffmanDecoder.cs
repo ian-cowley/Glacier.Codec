@@ -112,6 +112,10 @@ public static class HuffmanDecoder
         for (int i = 0; i < numSymbols; i++)
         {
             byte w = weights[i];
+            if (w > 11)
+            {
+                throw new InvalidDataException($"Corrupted Huffman weights: symbol weight {w} exceeds maximum 11.");
+            }
             if (w > 0)
             {
                 weightSum += 1 << (w - 1);
@@ -127,6 +131,7 @@ public static class HuffmanDecoder
         if (rest > 0)
         {
             if (!BitOperations.IsPow2(rest)) throw new InvalidDataException("Corrupted Huffman weights: remainder is not a power of 2.");
+            if (numSymbols >= 256) throw new InvalidDataException("Huffman symbol count exceeds 256.");
             weights[numSymbols++] = (byte)(BitOperations.Log2((uint)rest) + 1);
         }
 

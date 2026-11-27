@@ -113,4 +113,32 @@ public class Tier2_CompressionBoundaries
         Assert.Equal(randomData.Length, dLen);
         Assert.Equal(randomData, decomp);
     }
+
+    [Fact]
+    public void Boundary_Zstd_OversizedWindowFcsMismatchAndBadHuffmanWeight_ThrowInvalidDataException()
+    {
+        // Zstd frame with singleSegment=0 and exp=31 (window > 128 MB cap)
+        byte[] oversizedWindow = [0x28, 0xB5, 0x2F, 0xFD, 0x00, 0xF8, 0x01, 0x00, 0x00];
+        byte[] dest = new byte[64];
+        Assert.Throws<InvalidDataException>(() => ZstdCodec.Decompress(oversizedWindow, dest));
+
+        // Zstd singleSegment=1 with FCS=10 but 1-byte raw last block (len=1 != 10)
+        // FHD: 0x20 (singleSegment=1, fcsFlag=0 => 1-byte FCS=10), LastBlock Raw size=1: header = (1<<3)|1 = 9
+        byte[] fcsMismatch = [0x28, 0xB5, 0x2F, 0xFD, 0x20, 0x0A, 0x09, 0x00, 0x00, (byte)'A'];
+        Assert.Throws<InvalidDataException>(() => ZstdCodec.Decompress(fcsMismatch, dest));
+
+        // Huffman direct header (0x81 => 2 symbols), weight bytes have weight=15 (>11 max)
+        byte[] badHuff = [0x81, 0xFF];
+        Span<HuffmanTableEntry> tbl = stackalloc HuffmanTableEntry[2048];
+        bool threw = false;
+        try
+        {
+            HuffmanDecoder.BuildTable(badHuff, tbl, out _);
+        }
+        catch (InvalidDataException)
+        {
+            threw = true;
+        }
+        Assert.True(threw);
+    }
 }

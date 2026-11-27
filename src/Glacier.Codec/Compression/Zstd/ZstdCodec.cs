@@ -77,6 +77,7 @@ public sealed partial class ZstdCodec : ICompressionCodec
         bool contentChecksum = (fhd & 0x04) != 0;
         int dictIdFlag = fhd & 0x03;
 
+        const ulong MaxWindowSize = 128UL * 1024 * 1024;
         ulong windowSize = 0;
         if (!singleSegment)
         {
@@ -86,6 +87,10 @@ public sealed partial class ZstdCodec : ICompressionCodec
             int mant = wd & 0x07;
             ulong windowBase = 1UL << (10 + exp);
             windowSize = windowBase + ((windowBase / 8UL) * (ulong)mant);
+            if (windowSize > MaxWindowSize)
+            {
+                throw new InvalidDataException($"Zstd windowSize ({windowSize}) exceeds maximum allowed limit ({MaxWindowSize}).");
+            }
         }
 
         if (dictIdFlag > 0)
@@ -114,6 +119,11 @@ public sealed partial class ZstdCodec : ICompressionCodec
             else if (fcsBytes == 4) fcs = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(src, 4));
             else fcs = BinaryPrimitives.ReadUInt64LittleEndian(source.Slice(src, 8));
             src += fcsBytes;
+
+            if (fcs > (ulong)destination.Length)
+            {
+                throw new InvalidDataException($"Zstd frame content size ({fcs}) exceeds destination buffer length ({destination.Length}).");
+            }
         }
 
         int dst = 0;
@@ -199,6 +209,11 @@ public sealed partial class ZstdCodec : ICompressionCodec
                     ref mlAccuracy,
                     ref hasML);
             }
+        }
+
+        if (fcsBytes > 0 && (ulong)dst != fcs)
+        {
+            throw new InvalidDataException($"Zstd frame content size mismatch: expected {fcs} bytes, decoded {dst} bytes.");
         }
 
         // Verify Content Checksum if present
@@ -296,6 +311,11 @@ public sealed partial class ZstdCodec : ICompressionCodec
                 compSize = (int)((v >> 22) & 0x3FFFF);
                 litHeaderBytes = 5;
             }
+        }
+
+        if (regSize > ZstdConstants.MaxBlockSize)
+        {
+            throw new InvalidDataException($"Zstd literals size ({regSize}) exceeds maximum block size ({ZstdConstants.MaxBlockSize}).");
         }
 
         using var slab = UnmanagedSlabPool.Shared.Rent(Math.Max(regSize, 1024));

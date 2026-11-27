@@ -13,6 +13,29 @@ public static class CuDriver
     private const string CudaLibWindows = "nvcuda.dll";
     private const string CudaLibLinux = "libcuda.so.1";
 
+    static CuDriver()
+    {
+        NativeLibrary.SetDllImportResolver(typeof(CuDriver).Assembly, ResolveCudaLibrary);
+    }
+
+    private static IntPtr ResolveCudaLibrary(string libraryName, System.Reflection.Assembly assembly, DllImportSearchPath? searchPath)
+    {
+        if (!string.Equals(libraryName, CudaLibWindows, StringComparison.Ordinal))
+        {
+            return IntPtr.Zero;
+        }
+
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            if (NativeLibrary.TryLoad(CudaLibLinux, out IntPtr handle) ||
+                NativeLibrary.TryLoad("libcuda.so", out handle))
+            {
+                return handle;
+            }
+        }
+        return IntPtr.Zero;
+    }
+
     private static readonly Lazy<bool> _isAvailable = new(() =>
     {
         try
@@ -74,7 +97,6 @@ public static class CuDriver
     [DllImport(CudaLibWindows, EntryPoint = "cuCtxDestroy_v2")]
     public static extern int CtxDestroy(IntPtr ctx);
 
-    [SuppressGCTransition]
     [DllImport(CudaLibWindows, EntryPoint = "cuCtxSynchronize")]
     public static extern int CtxSynchronize();
 
@@ -87,31 +109,24 @@ public static class CuDriver
     [DllImport(CudaLibWindows, EntryPoint = "cuModuleGetFunction")]
     public static extern int ModuleGetFunction(out IntPtr hfunc, IntPtr hmod, string name);
 
-    [SuppressGCTransition]
     [DllImport(CudaLibWindows, EntryPoint = "cuMemAlloc_v2")]
     public static extern int MemAlloc(out IntPtr dptr, nuint bytesize);
 
-    [SuppressGCTransition]
     [DllImport(CudaLibWindows, EntryPoint = "cuMemFree_v2")]
     public static extern int MemFree(IntPtr dptr);
 
-    [SuppressGCTransition]
     [DllImport(CudaLibWindows, EntryPoint = "cuMemcpyHtoD_v2")]
     public static extern int MemcpyHtoD(IntPtr dstDevice, IntPtr srcHost, nuint byteCount);
 
-    [SuppressGCTransition]
     [DllImport(CudaLibWindows, EntryPoint = "cuMemcpyDtoH_v2")]
     public static extern int MemcpyDtoH(IntPtr dstHost, IntPtr srcDevice, nuint byteCount);
 
-    [SuppressGCTransition]
     [DllImport(CudaLibWindows, EntryPoint = "cuMemcpyHtoDAsync_v2")]
     public static extern int MemcpyHtoDAsync(IntPtr dstDevice, IntPtr srcHost, nuint byteCount, IntPtr hStream);
 
-    [SuppressGCTransition]
     [DllImport(CudaLibWindows, EntryPoint = "cuMemcpyDtoHAsync_v2")]
     public static extern int MemcpyDtoHAsync(IntPtr dstHost, IntPtr srcDevice, nuint byteCount, IntPtr hStream);
 
-    [SuppressGCTransition]
     [DllImport(CudaLibWindows, EntryPoint = "cuLaunchKernel")]
     public static extern int LaunchKernel(
         IntPtr f,
@@ -123,7 +138,6 @@ public static class CuDriver
     [DllImport(CudaLibWindows, EntryPoint = "cuStreamCreate")]
     public static extern int StreamCreate(out IntPtr phStream, uint flags);
 
-    [SuppressGCTransition]
     [DllImport(CudaLibWindows, EntryPoint = "cuStreamSynchronize")]
     public static extern int StreamSynchronize(IntPtr hStream);
 

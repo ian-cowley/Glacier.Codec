@@ -117,7 +117,14 @@ public sealed unsafe class SecureMemory : IDisposable
             if (_pointer != null)
             {
                 nuint allocSize = ((nuint)_length + 63) & ~(nuint)63;
-                CryptographicOperations.ZeroMemory(new Span<byte>(_pointer, (int)allocSize));
+                byte* ptr = (byte*)_pointer;
+                while (allocSize > 0)
+                {
+                    int chunk = allocSize > (nuint)int.MaxValue ? int.MaxValue : (int)allocSize;
+                    CryptographicOperations.ZeroMemory(new Span<byte>(ptr, chunk));
+                    ptr += chunk;
+                    allocSize -= (nuint)chunk;
+                }
                 NativeMemory.AlignedFree(_pointer);
                 _pointer = null;
             }

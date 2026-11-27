@@ -9,7 +9,7 @@
     <PublishAot>true</PublishAot>
     <IsAotCompatible>true</IsAotCompatible>
     <PackageId>Glacier.Codec.Gpu.Cli</PackageId>
-    <Version>1.0.0</Version>
+    <Version>1.2.3</Version>
     <Authors>Ian Cowley</Authors>
     <Company>Glacier High-Performance Ecosystem</Company>
     <Description>High-performance GPU cryptographic hashing and parallel nonce search CLI worker for Glacier.Codec.</Description>

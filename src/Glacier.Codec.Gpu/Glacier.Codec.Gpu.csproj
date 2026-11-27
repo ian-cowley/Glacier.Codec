@@ -19,7 +19,7 @@
 
     <!-- NuGet Package Metadata -->
     <PackageId>Glacier.Codec.Gpu</PackageId>
-    <Version>1.0.0</Version>
+    <Version>1.2.3</Version>
     <Authors>Ian Cowley</Authors>
     <Company>Glacier High-Performance Ecosystem</Company>
     <Description>Hardware-accelerated GPU cryptographic hashing and parallel nonce search engine for Glacier.Codec. Executes bare-metal CUDA PTX assembly directly via nvcuda.dll without CUDA Toolkit dependencies.</Description>
