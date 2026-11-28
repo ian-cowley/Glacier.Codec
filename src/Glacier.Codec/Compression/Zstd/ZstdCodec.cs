@@ -55,7 +55,7 @@ public sealed partial class ZstdCodec : ICompressionCodec
         {
             if (source.Length < 8) throw new InvalidDataException("Truncated skippable frame.");
             uint skipSize = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(4, 4));
-            if (8 + skipSize > (uint)source.Length) throw new InvalidDataException("Skippable frame exceeds bounds.");
+            if ((ulong)skipSize > (ulong)(source.Length - 8)) throw new InvalidDataException("Skippable frame exceeds bounds.");
             return 0;
         }
 
@@ -96,7 +96,7 @@ public sealed partial class ZstdCodec : ICompressionCodec
         if (dictIdFlag > 0)
         {
             int dictBytes = dictIdFlag == 1 ? 1 : (dictIdFlag == 2 ? 2 : 4);
-            if (src + dictBytes > source.Length) throw new InvalidDataException("Truncated dict ID.");
+            if (dictBytes > source.Length - src) throw new InvalidDataException("Truncated dict ID.");
             src += dictBytes;
         }
 
@@ -113,7 +113,7 @@ public sealed partial class ZstdCodec : ICompressionCodec
 
         if (fcsBytes > 0)
         {
-            if (src + fcsBytes > source.Length) throw new InvalidDataException("Truncated frame content size.");
+            if (fcsBytes > source.Length - src) throw new InvalidDataException("Truncated frame content size.");
             if (fcsBytes == 1) fcs = source[src];
             else if (fcsBytes == 2) fcs = (ulong)(BinaryPrimitives.ReadUInt16LittleEndian(source.Slice(src, 2)) + 256);
             else if (fcsBytes == 4) fcs = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(src, 4));
@@ -142,7 +142,7 @@ public sealed partial class ZstdCodec : ICompressionCodec
         bool isLastBlock = false;
         while (!isLastBlock)
         {
-            if (src + 3 > source.Length)
+            if (3 > source.Length - src)
             {
                 throw new InvalidDataException("Truncated block header.");
             }
@@ -167,7 +167,7 @@ public sealed partial class ZstdCodec : ICompressionCodec
             }
 
             int payloadSize = blockType == ZstdConstants.BlockTypeRle ? 1 : blockSize;
-            if (src + payloadSize > source.Length)
+            if (payloadSize > source.Length - src)
             {
                 throw new InvalidDataException("Block payload truncated.");
             }
@@ -177,7 +177,7 @@ public sealed partial class ZstdCodec : ICompressionCodec
 
             if (blockType == ZstdConstants.BlockTypeRaw)
             {
-                if (dst + blockSize > destination.Length) throw new InvalidDataException("Destination buffer overflow.");
+                if (blockSize > destination.Length - dst) throw new InvalidDataException("Destination buffer overflow.");
                 blockPayload.CopyTo(destination.Slice(dst, blockSize));
                 dst += blockSize;
             }
@@ -185,7 +185,7 @@ public sealed partial class ZstdCodec : ICompressionCodec
             {
                 if (blockPayload.IsEmpty) throw new InvalidDataException("Truncated RLE block payload.");
                 byte rleByte = blockPayload[0];
-                if (dst + blockSize > destination.Length) throw new InvalidDataException("Destination buffer overflow.");
+                if (blockSize > destination.Length - dst) throw new InvalidDataException("Destination buffer overflow.");
                 destination.Slice(dst, blockSize).Fill(rleByte);
                 dst += blockSize;
             }
@@ -219,7 +219,7 @@ public sealed partial class ZstdCodec : ICompressionCodec
         // Verify Content Checksum if present
         if (contentChecksum)
         {
-            if (src + 4 > source.Length) throw new InvalidDataException("Truncated content checksum trailer.");
+            if (4 > source.Length - src) throw new InvalidDataException("Truncated content checksum trailer.");
             uint expected = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(src, 4));
             src += 4;
 
@@ -325,7 +325,7 @@ public sealed partial class ZstdCodec : ICompressionCodec
 
         if (litType == ZstdConstants.LiteralsTypeRaw)
         {
-            if (litDataOffset + regSize > block.Length) throw new InvalidDataException("Truncated raw literals block.");
+            if (regSize > block.Length - litDataOffset) throw new InvalidDataException("Truncated raw literals block.");
             block.Slice(litDataOffset, regSize).CopyTo(literals);
             litDataOffset += regSize;
         }
@@ -337,7 +337,7 @@ public sealed partial class ZstdCodec : ICompressionCodec
         }
         else if (litType == ZstdConstants.LiteralsTypeCompressed)
         {
-            if (litDataOffset + compSize > block.Length) throw new InvalidDataException("Truncated compressed literals block.");
+            if (compSize > block.Length - litDataOffset) throw new InvalidDataException("Truncated compressed literals block.");
             int treeBytes = HuffmanDecoder.BuildTable(block.Slice(litDataOffset, compSize), huffTable, out huffMaxBits);
             hasHuffTable = true;
             litDataOffset += treeBytes;
@@ -362,7 +362,7 @@ public sealed partial class ZstdCodec : ICompressionCodec
             {
                 throw new InvalidDataException("Treeless literals block cannot appear before a Huffman table description.");
             }
-            if (litDataOffset + compSize > block.Length) throw new InvalidDataException("Truncated treeless literals block.");
+            if (compSize > block.Length - litDataOffset) throw new InvalidDataException("Truncated treeless literals block.");
             ReadOnlySpan<byte> streamsPayload = block.Slice(litDataOffset, compSize);
             litDataOffset += compSize;
 
@@ -381,7 +381,7 @@ public sealed partial class ZstdCodec : ICompressionCodec
         if (seqSection.IsEmpty)
         {
             // All literals, no sequences
-            if (dst + literals.Length > destination.Length) throw new InvalidDataException("Destination buffer overflow.");
+            if (literals.Length > destination.Length - dst) throw new InvalidDataException("Destination buffer overflow.");
             literals.CopyTo(destination.Slice(dst));
             dst += literals.Length;
             return;
@@ -406,13 +406,13 @@ public sealed partial class ZstdCodec : ICompressionCodec
         }
         else
         {
-            if (seqOffset + 2 > seqSection.Length) throw new InvalidDataException("Truncated sequences header.");
+            if (2 > seqSection.Length - seqOffset) throw new InvalidDataException("Truncated sequences header.");
             numSequences = seqSection[seqOffset++] + (seqSection[seqOffset++] << 8) + 0x7F00;
         }
 
         if (numSequences == 0)
         {
-            if (dst + literals.Length > destination.Length) throw new InvalidDataException("Destination buffer overflow.");
+            if (literals.Length > destination.Length - dst) throw new InvalidDataException("Destination buffer overflow.");
             literals.CopyTo(destination.Slice(dst));
             dst += literals.Length;
             return;
@@ -437,7 +437,9 @@ public sealed partial class ZstdCodec : ICompressionCodec
         else if (llMode == 1)
         {
             if (seqOffset >= seqSection.Length) throw new InvalidDataException("Truncated RLE LL symbol.");
-            FseDecoder.BuildRleTable(seqSection[seqOffset++], tableLL.Slice(0, 1));
+            byte llSym = seqSection[seqOffset++];
+            if (llSym > 35) throw new InvalidDataException($"Invalid RLE Literal_Lengths symbol: {llSym}.");
+            FseDecoder.BuildRleTable(llSym, tableLL.Slice(0, 1));
             llAccuracy = 0;
             hasLL = true;
         }
@@ -462,7 +464,9 @@ public sealed partial class ZstdCodec : ICompressionCodec
         else if (ofMode == 1)
         {
             if (seqOffset >= seqSection.Length) throw new InvalidDataException("Truncated RLE OF symbol.");
-            FseDecoder.BuildRleTable(seqSection[seqOffset++], tableOF.Slice(0, 1));
+            byte ofSym = seqSection[seqOffset++];
+            if (ofSym > 31) throw new InvalidDataException($"Invalid RLE Offsets symbol: {ofSym}.");
+            FseDecoder.BuildRleTable(ofSym, tableOF.Slice(0, 1));
             ofAccuracy = 0;
             hasOF = true;
         }
@@ -487,7 +491,9 @@ public sealed partial class ZstdCodec : ICompressionCodec
         else if (mlMode == 1)
         {
             if (seqOffset >= seqSection.Length) throw new InvalidDataException("Truncated RLE ML symbol.");
-            FseDecoder.BuildRleTable(seqSection[seqOffset++], tableML.Slice(0, 1));
+            byte mlSym = seqSection[seqOffset++];
+            if (mlSym > 52) throw new InvalidDataException($"Invalid RLE Match_Lengths symbol: {mlSym}.");
+            FseDecoder.BuildRleTable(mlSym, tableML.Slice(0, 1));
             mlAccuracy = 0;
             hasML = true;
         }
@@ -517,10 +523,20 @@ public sealed partial class ZstdCodec : ICompressionCodec
             byte mlCode = tableML[(int)stateML].Symbol;
             byte llCode = tableLL[(int)stateLL].Symbol;
 
+            if (ofCode >= 31 || mlCode > 52 || llCode > 35)
+            {
+                throw new InvalidDataException($"Invalid Zstd sequence code (OF={ofCode}, ML={mlCode}, LL={llCode}).");
+            }
+
             // Read Extra Bits in strict RFC 8878 order: Offset -> Match Length -> Literal Length
             int ofBits = ofCode;
             uint ofExtra = bitReader.ReadBits(ofBits);
-            int offsetCode = (1 << ofCode) + (int)ofExtra;
+            ulong offsetCode64 = (1UL << ofCode) + ofExtra;
+            if (offsetCode64 > int.MaxValue)
+            {
+                throw new InvalidDataException($"Zstd sequence offset code ({offsetCode64}) exceeds 32-bit range.");
+            }
+            int offsetCode = (int)offsetCode64;
 
             int mlBits = ZstdConstants.Table17_Bits[mlCode];
             uint mlExtra = bitReader.ReadBits(mlBits);
@@ -547,7 +563,7 @@ public sealed partial class ZstdCodec : ICompressionCodec
         if (litIdx < literals.Length)
         {
             int remLits = literals.Length - litIdx;
-            if (dst + remLits > destination.Length) throw new InvalidDataException("Destination buffer overflow.");
+            if (remLits > destination.Length - dst) throw new InvalidDataException("Destination buffer overflow.");
             literals.Slice(litIdx, remLits).CopyTo(destination.Slice(dst, remLits));
             dst += remLits;
         }

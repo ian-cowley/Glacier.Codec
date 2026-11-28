@@ -143,7 +143,8 @@ public sealed unsafe class CachelineAlignedBuffer : MemoryManager<byte>, IMemory
                 return Span<byte>.Empty;
             }
 
-            return new Span<byte>(_pointer, (int)_allocatedBytes);
+            int spanLength = _allocatedBytes > (nuint)int.MaxValue ? int.MaxValue : (int)_allocatedBytes;
+            return new Span<byte>(_pointer, spanLength);
         }
     }
 

@@ -214,8 +214,25 @@ public sealed unsafe class Lz4Codec : ICompressionCodec
     /// <param name="source">Compressed LZ4 block span.</param>
     /// <param name="destination">Destination uncompressed span.</param>
     /// <returns>Number of decompressed bytes written.</returns>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int Decompress(ReadOnlySpan<byte> source, Span<byte> destination)
+        => DecompressFromOffset(source, destination, outputOffset: 0, historyStartOffset: 0);
+
+    /// <summary>
+    /// Decompresses an LZ4 block into <paramref name="destination"/> starting at <paramref name="outputOffset"/>,
+    /// permitting match offsets to reference previously decoded history back to <paramref name="historyStartOffset"/>.
+    /// </summary>
+    internal static int DecompressFromOffset(
+        ReadOnlySpan<byte> source,
+        Span<byte> destination,
+        int outputOffset,
+        int historyStartOffset)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(outputOffset);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(outputOffset, destination.Length);
+        ArgumentOutOfRangeException.ThrowIfNegative(historyStartOffset);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(historyStartOffset, outputOffset);
+
         if (source.IsEmpty || (source.Length == 1 && source[0] == 0x00))
         {
             return 0;
@@ -227,7 +244,9 @@ public sealed unsafe class Lz4Codec : ICompressionCodec
             byte* ip = pSource;
             byte* iend = pSource + source.Length;
 
-            byte* op = pDest;
+            byte* pHistoryStart = pDest + historyStartOffset;
+            byte* opBase = pDest + outputOffset;
+            byte* op = opBase;
             byte* oend = pDest + destination.Length;
 
             while (ip < iend)
@@ -317,7 +336,12 @@ public sealed unsafe class Lz4Codec : ICompressionCodec
                 if (offset == 0) throw new InvalidDataException("LZ4 match offset cannot be zero.");
 
                 byte* match = op - offset;
-                if (match < pDest) throw new InvalidDataException("LZ4 offset points before start of buffer.");
+                if (match < pHistoryStart)
+                {
+                    throw new InvalidDataException(historyStartOffset == 0
+                        ? "LZ4 offset points before start of buffer."
+                        : "LZ4 offset points before start of history window.");
+                }
 
                 // 5. Read Match Length
                 int matchLength = tokenMatch + Lz4Constants.MinMatch;
@@ -413,7 +437,7 @@ public sealed unsafe class Lz4Codec : ICompressionCodec
                 }
             }
 
-            return (int)(op - pDest);
+            return (int)(op - opBase);
         }
     }
 

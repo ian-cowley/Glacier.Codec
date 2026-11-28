@@ -168,10 +168,13 @@ public class EmpiricalConcurrencyTortureTests
     }
 
     /// <summary>
-    /// EMPIRICAL PROOF 3: POINTER API TORTURE UNDER 48 WORKERS WITH CHAOTIC RETURNS.
-    /// Workers concurrently rent pointers, fill them, and randomly perform duplicate returns,
-    /// untracked foreign pointer returns, and null pointer returns.
-    /// Asserts zero CRT heap corruption crashes and zero double-frees.
+    /// EMPIRICAL PROOF 3: POINTER API & SLABLEASE CONCURRENCY TORTURE UNDER 48 WORKERS.
+    /// Phase 1: 48 concurrent workers rent raw pointers, fill/verify them, perform single returns,
+    ///          and concurrently pass untracked foreign/bogus/null pointers to Return(IntPtr, int).
+    /// Phase 2: Barrier-separated raw-pointer duplicate Return(ptr, actualSize) idempotency with no
+    ///          concurrent Rent able to re-issue the address (respecting raw-pointer ABA boundary).
+    /// Phase 3: 48 concurrent workers stress SlabLease.Dispose() double/triple-dispose idempotency
+    ///          under full contention, proving SlabLease is strictly ABA-safe.
     /// </summary>
     [Fact]
     public unsafe void Torture_48Workers_PointerApi_DuplicateAndUntrackedReturns_ZeroCrashes()
@@ -181,14 +184,16 @@ public class EmpiricalConcurrencyTortureTests
         var exceptions = new ConcurrentBag<Exception>();
         int totalCompleted = 0;
 
-        // Allocate a few external buffers that are NOT in the pool
+        // Allocate an external buffer that is NOT in the pool
         void* externalBuffer = NativeMemory.AlignedAlloc(4096, 64);
         try
         {
+            // Phase 1: 48-worker concurrent raw-pointer Rent + write + single Return + foreign/untracked/zero returns
             Parallel.For(0, ConcurrencyWorkers48, new ParallelOptions { MaxDegreeOfParallelism = ConcurrencyWorkers48 }, workerId =>
             {
                 try
                 {
+                    byte* stackForeign = stackalloc byte[64];
                     for (int iter = 0; iter < iterationsPerWorker; iter++)
                     {
                         int size = (iter % 2 == 0) ? 64 * 1024 : 1024 * 1024;
@@ -198,30 +203,32 @@ public class EmpiricalConcurrencyTortureTests
                         Assert.Equal(0u, (nuint)ptr % 64u);
                         Assert.True(actualSize >= size);
 
-                        // Write to buffer
+                        // Write deterministic sentinel values and verify before returning
                         Span<byte> span = new((void*)ptr, actualSize);
-                        span[0] = 0xAA;
-                        span[actualSize - 1] = 0x55;
+                        byte head = (byte)(((workerId * 17 + iter) & 0xFF) | 0x01);
+                        byte tail = (byte)(head ^ 0x55);
+                        span[0] = head;
+                        span[actualSize - 1] = tail;
+                        Assert.Equal(head, span[0]);
+                        Assert.Equal(tail, span[actualSize - 1]);
 
-                        // Return valid buffer
+                        // Single valid return under full 48-worker Rent/Return contention
                         pool.Return(ptr, actualSize);
 
-                        // Adversarial duplicate return: must safely no-op
-                        pool.Return(ptr, actualSize);
-
-                        // Adversarial third return
-                        if (iter % 5 == 0)
-                        {
-                            pool.Return(ptr, actualSize);
-                        }
-
-                        // Chaotic untracked foreign pointer return: must not free or throw
+                        // Chaotic untracked foreign/bogus/zero pointer returns: must not free or throw
                         if (iter % 7 == 0)
                         {
                             pool.Return((IntPtr)externalBuffer, 4096);
                         }
+                        if (iter % 11 == 0)
+                        {
+                            pool.Return(new IntPtr(0x123456), 4096);
+                        }
+                        if (iter % 13 == 0)
+                        {
+                            pool.Return((IntPtr)stackForeign, 64);
+                        }
 
-                        // Null pointer return: safe no-op
                         pool.Return(IntPtr.Zero, 0);
 
                         Interlocked.Increment(ref totalCompleted);
@@ -235,6 +242,102 @@ public class EmpiricalConcurrencyTortureTests
 
             Assert.Empty(exceptions);
             Assert.Equal(ConcurrencyWorkers48 * iterationsPerWorker, totalCompleted);
+
+            // Phase 2: Barrier-separated raw-pointer duplicate Return(ptr, actualSize) idempotency
+            // No Rent occurs during the duplicate-Return step so raw IntPtr addresses cannot be re-issued via ABA.
+            const int barrierRounds = 10;
+            var rentedPtrs = new IntPtr[ConcurrencyWorkers48];
+            var rentedSizes = new int[ConcurrencyWorkers48];
+
+            for (int round = 0; round < barrierRounds; round++)
+            {
+                Parallel.For(0, ConcurrencyWorkers48, new ParallelOptions { MaxDegreeOfParallelism = ConcurrencyWorkers48 }, workerId =>
+                {
+                    try
+                    {
+                        int size = ((workerId + round) % 2 == 0) ? 64 * 1024 : 1024 * 1024;
+                        IntPtr ptr = pool.Rent(size, out int actualSize);
+
+                        Assert.NotEqual(IntPtr.Zero, ptr);
+                        Assert.Equal(0u, (nuint)ptr % 64u);
+                        Assert.True(actualSize >= size);
+
+                        Span<byte> span = new((void*)ptr, actualSize);
+                        span[0] = 0xAA;
+                        span[actualSize - 1] = 0x55;
+
+                        rentedPtrs[workerId] = ptr;
+                        rentedSizes[workerId] = actualSize;
+                    }
+                    catch (Exception ex)
+                    {
+                        exceptions.Add(ex);
+                    }
+                });
+
+                Assert.Empty(exceptions);
+
+                Parallel.For(0, ConcurrencyWorkers48, new ParallelOptions { MaxDegreeOfParallelism = ConcurrencyWorkers48 }, workerId =>
+                {
+                    try
+                    {
+                        IntPtr ptr = rentedPtrs[workerId];
+                        int actualSize = rentedSizes[workerId];
+
+                        // Valid return + duplicate + third return while no concurrent Rent can re-issue ptr
+                        pool.Return(ptr, actualSize);
+                        pool.Return(ptr, actualSize);
+                        pool.Return(ptr, actualSize);
+                        pool.Return((IntPtr)externalBuffer, 4096);
+                        pool.Return(new IntPtr(0x123456), 4096);
+                        pool.Return(IntPtr.Zero, 0);
+                    }
+                    catch (Exception ex)
+                    {
+                        exceptions.Add(ex);
+                    }
+                });
+
+                Assert.Empty(exceptions);
+            }
+
+            // Phase 3: 48-worker concurrent SlabLease double/triple-Dispose() contention torture (ABA-safe)
+            int leaseCompleted = 0;
+            Parallel.For(0, ConcurrencyWorkers48, new ParallelOptions { MaxDegreeOfParallelism = ConcurrencyWorkers48 }, workerId =>
+            {
+                try
+                {
+                    for (int iter = 0; iter < iterationsPerWorker; iter++)
+                    {
+                        int size = (iter % 2 == 0) ? 64 * 1024 : 1024 * 1024;
+                        SlabLease lease = pool.Rent(size);
+
+                        Assert.NotEqual(IntPtr.Zero, (IntPtr)lease.Pointer);
+                        Assert.Equal(0u, (nuint)lease.Pointer % 64u);
+                        Assert.True(lease.Length >= size);
+
+                        Span<byte> span = lease.Span;
+                        span[0] = 0xAA;
+                        span[lease.Length - 1] = 0x55;
+
+                        lease.Dispose();
+                        lease.Dispose(); // Duplicate Dispose under full 48-worker contention
+                        if (iter % 5 == 0)
+                        {
+                            lease.Dispose(); // Third Dispose
+                        }
+
+                        Interlocked.Increment(ref leaseCompleted);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    exceptions.Add(ex);
+                }
+            });
+
+            Assert.Empty(exceptions);
+            Assert.Equal(ConcurrencyWorkers48 * iterationsPerWorker, leaseCompleted);
         }
         finally
         {

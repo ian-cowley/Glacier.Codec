@@ -100,6 +100,36 @@ public class GpuCliTests
     public void ComputeDifficultyMask_ReturnsExpectedMask(uint bits, uint expectedMask)
     {
         Assert.Equal(expectedMask, Program.ComputeDifficultyMask(bits));
+        Assert.Equal(expectedMask, Program.ComputeDifficultyMask(bits, "sha256"));
+    }
+
+    [Theory]
+    [InlineData(0u, 0x00000000u)]
+    [InlineData(1u, 0x00000080u)]
+    [InlineData(4u, 0x000000F0u)]
+    [InlineData(8u, 0x000000FFu)]
+    [InlineData(12u, 0x0000F0FFu)]
+    [InlineData(16u, 0x0000FFFFu)]
+    [InlineData(24u, 0x00FFFFFFu)]
+    [InlineData(32u, 0xFFFFFFFFu)]
+    [InlineData(64u, 0xFFFFFFFFu)]
+    public void ComputeBlake3DifficultyMask_ReturnsLittleEndianWordMask(uint bits, uint expectedMask)
+    {
+        Assert.Equal(expectedMask, Program.ComputeBlake3DifficultyMask(bits));
+        Assert.Equal(expectedMask, Program.ComputeDifficultyMask(bits, "blake3"));
+        Assert.Equal(expectedMask, Program.ComputeDifficultyMask(bits, "BLAKE3"));
+    }
+
+    [Theory]
+    [InlineData(new byte[] { 0xFF, 0xFF }, 0u, true)]
+    [InlineData(new byte[] { 0x00, 0x00, 0xAB }, 16u, true)]
+    [InlineData(new byte[] { 0x00, 0x0F, 0xFF }, 12u, true)]
+    [InlineData(new byte[] { 0x00, 0x10, 0x00 }, 12u, false)]
+    [InlineData(new byte[] { 0x00, 0x01, 0x00 }, 16u, false)]
+    [InlineData(new byte[] { 0x00, 0x00, 0x00, 0x00 }, 32u, true)]
+    public void HasLeadingZeroBits_ValidatesByteAndSubBytePrefixes(byte[] hash, uint bits, bool expected)
+    {
+        Assert.Equal(expected, Program.HasLeadingZeroBits(hash, bits));
     }
 
     [Fact]

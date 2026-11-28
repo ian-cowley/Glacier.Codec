@@ -34,10 +34,17 @@ public sealed unsafe class UnmanagedSlabPool : IDisposable
     private struct RawEntry
     {
         public IntPtr Ptr;
-        public CachelineAlignedBuffer Buffer;
+        public CachelineAlignedBuffer? Buffer;
         public int Tier; // 1 = small, 2 = large, 3 = huge, 0 = oversized
+        public int Next;
     }
-    private readonly RawEntry[] _rawEntries = new RawEntry[512];
+
+    private const int InitialRawCapacity = 512;
+    private int[] _rawBuckets;
+    private RawEntry[] _rawEntries;
+    private int _rawCount;
+    private int _rawFreeList = -1;
+    private int _rawFreeCount;
     private readonly object _rawLock = new();
 
     private readonly int _maxSmallSlabs;
@@ -148,6 +155,10 @@ public sealed unsafe class UnmanagedSlabPool : IDisposable
         _smallSlabs = new CachelineAlignedBuffer?[maxSmallSlabs];
         _largeSlabs = new CachelineAlignedBuffer?[maxLargeSlabs];
         _hugeSlabs = new CachelineAlignedBuffer?[maxHugeSlabs];
+
+        _rawBuckets = new int[InitialRawCapacity];
+        Array.Fill(_rawBuckets, -1);
+        _rawEntries = new RawEntry[InitialRawCapacity];
     }
 
     /// <summary>
@@ -248,23 +259,83 @@ public sealed unsafe class UnmanagedSlabPool : IDisposable
 
         lock (_rawLock)
         {
-            for (int i = 0; i < _rawEntries.Length; i++)
+            if (_disposed != 0)
             {
-                if (_rawEntries[i].Ptr == IntPtr.Zero)
+                lease.Buffer.Dispose();
+                throw new ObjectDisposedException(nameof(UnmanagedSlabPool));
+            }
+
+            int index;
+            if (_rawFreeCount > 0)
+            {
+                index = _rawFreeList;
+                _rawFreeList = _rawEntries[index].Next;
+                _rawFreeCount--;
+            }
+            else
+            {
+                if (_rawCount == _rawEntries.Length)
                 {
-                    _rawEntries[i] = new RawEntry { Ptr = ptr, Buffer = lease.Buffer, Tier = lease.Tier };
-                    return ptr;
+                    ResizeRawTable();
                 }
+                index = _rawCount++;
+            }
+
+            int bucket = GetBucketIndex(ptr, _rawBuckets.Length);
+            _rawEntries[index] = new RawEntry
+            {
+                Ptr = ptr,
+                Buffer = lease.Buffer,
+                Tier = lease.Tier,
+                Next = _rawBuckets[bucket]
+            };
+            _rawBuckets[bucket] = index;
+            return ptr;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int GetBucketIndex(IntPtr ptr, int bucketCount)
+    {
+        ulong u = (ulong)ptr >> 6;
+        u ^= u >> 16;
+        return (int)u & (bucketCount - 1);
+    }
+
+    private void ResizeRawTable()
+    {
+        int newCapacity = _rawEntries.Length * 2;
+        var newBuckets = new int[newCapacity];
+        Array.Fill(newBuckets, -1);
+        var newEntries = new RawEntry[newCapacity];
+        Array.Copy(_rawEntries, newEntries, _rawCount);
+
+        for (int i = 0; i < _rawCount; i++)
+        {
+            if (newEntries[i].Ptr != IntPtr.Zero)
+            {
+                int bucket = GetBucketIndex(newEntries[i].Ptr, newCapacity);
+                newEntries[i].Next = newBuckets[bucket];
+                newBuckets[bucket] = i;
             }
         }
 
-        throw new InvalidOperationException("Raw allocation tracking table exhausted.");
+        _rawBuckets = newBuckets;
+        _rawEntries = newEntries;
     }
 
     /// <summary>
     /// Returns an unmanaged slab pointer back to the pool, wiping memory.
-    /// Untracked or duplicate-returned pointers are safely ignored to guarantee idempotency.
+    /// Untracked or null pointers (<see cref="IntPtr.Zero"/>) are safely ignored.
     /// </summary>
+    /// <remarks>
+    /// Thread-safety boundary: a duplicate <c>Return(ptr, size)</c> call is idempotent only while no
+    /// concurrent <see cref="Rent(int, out int)"/> can re-issue the exact same <paramref name="ptr"/> address
+    /// (raw <see cref="IntPtr"/> values carry no per-rental generation token, so a delayed duplicate return
+    /// can collide with a subsequent rental via ABA). Callers requiring concurrent double-dispose idempotency
+    /// under multi-threaded <c>Rent</c>/<c>Return</c> contention must use <see cref="SlabLease"/> via
+    /// <see cref="Rent(int)"/>, whose per-lease disposal state makes <see cref="SlabLease.Dispose"/> strictly ABA-safe.
+    /// </remarks>
     /// <param name="ptr">Pointer to returned buffer.</param>
     /// <param name="size">Size of returned buffer in bytes.</param>
     public void Return(IntPtr ptr, int size)
@@ -276,15 +347,37 @@ public sealed unsafe class UnmanagedSlabPool : IDisposable
 
         lock (_rawLock)
         {
-            for (int i = 0; i < _rawEntries.Length; i++)
+            int bucket = GetBucketIndex(ptr, _rawBuckets.Length);
+            int prev = -1;
+            int curr = _rawBuckets[bucket];
+            while (curr >= 0)
             {
-                if (_rawEntries[i].Ptr == ptr)
+                if (_rawEntries[curr].Ptr == ptr)
                 {
-                    buf = _rawEntries[i].Buffer;
-                    tier = _rawEntries[i].Tier;
-                    _rawEntries[i] = default;
+                    buf = _rawEntries[curr].Buffer;
+                    tier = _rawEntries[curr].Tier;
+                    if (prev < 0)
+                    {
+                        _rawBuckets[bucket] = _rawEntries[curr].Next;
+                    }
+                    else
+                    {
+                        _rawEntries[prev].Next = _rawEntries[curr].Next;
+                    }
+
+                    _rawEntries[curr] = new RawEntry
+                    {
+                        Ptr = IntPtr.Zero,
+                        Buffer = null,
+                        Tier = 0,
+                        Next = _rawFreeList
+                    };
+                    _rawFreeList = curr;
+                    _rawFreeCount++;
                     break;
                 }
+                prev = curr;
+                curr = _rawEntries[curr].Next;
             }
         }
 
@@ -301,7 +394,7 @@ public sealed unsafe class UnmanagedSlabPool : IDisposable
 
         if (buffer.Pointer != null)
         {
-            CryptographicOperations.ZeroMemory(new Span<byte>(buffer.Pointer, (int)buffer.AllocatedBytes));
+            ZeroMemoryChunked((byte*)buffer.Pointer, buffer.AllocatedBytes);
         }
 
         if (_disposed != 0 || !isPooled)
@@ -347,17 +440,34 @@ public sealed unsafe class UnmanagedSlabPool : IDisposable
         buffer.Dispose();
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void ZeroMemoryChunked(byte* ptr, nuint totalBytes)
+    {
+        nuint offset = 0;
+        while (offset < totalBytes)
+        {
+            nuint remaining = totalBytes - offset;
+            int chunk = remaining > (nuint)int.MaxValue ? int.MaxValue : (int)remaining;
+            CryptographicOperations.ZeroMemory(new Span<byte>(ptr + offset, chunk));
+            offset += (nuint)chunk;
+        }
+    }
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 0)
         {
             lock (_rawLock)
             {
-                for (int i = 0; i < _rawEntries.Length; i++)
+                for (int i = 0; i < _rawCount; i++)
                 {
                     _rawEntries[i].Buffer?.Dispose();
                     _rawEntries[i] = default;
                 }
+                Array.Fill(_rawBuckets, -1);
+                _rawCount = 0;
+                _rawFreeList = -1;
+                _rawFreeCount = 0;
             }
 
             lock (_smallLock)

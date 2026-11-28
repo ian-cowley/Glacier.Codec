@@ -31,7 +31,7 @@ FRAMEWORK TARGET: C# .NET 10.0 / Native AOT / Pure Managed & Unmanaged Intrinsic
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Native AOT](https://img.shields.io/badge/Native%20AOT-Compatible-success)](https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/)
 [![Zero Allocation](https://img.shields.io/badge/Hot%20Path-0%20Heap%20Allocations-brightgreen)](#hardware-benchmarks)
-[![Security: Zero Secrets](https://img.shields.io/badge/Security-0%20Secrets%20Verified-brightgreen)](scripts/security_check.py)
+[![Security: Zero Secrets](https://img.shields.io/badge/Security-0%20Secrets%20Verified-brightgreen)](.github/workflows/ci.yml)
 [![Website](https://img.shields.io/badge/Website-glaciersoftware.dev-66fcf1.svg)](https://glaciersoftware.dev/)
 [![Fleet Verified](https://img.shields.io/badge/Physical%20Fleet-Verified-blue)](#hardware-benchmarks)
 
@@ -190,7 +190,7 @@ Blake3Hasher.Hash(data, digest);
 
 ## Verification & Conformance
 
-The test harness runs 1,372 automated unit, boundary, and adversarial torture tests:
+The test harness runs 1,510 automated CPU unit, boundary, constant-time, and adversarial torture tests (plus 17 CUDA/D3D12 GPU tests in `Glacier.Codec.Gpu.Tests`):
 - **NIST FIPS 180-4:** 100% pass on SHA-256 golden vectors.
 - **NIST SP 800-38D:** 100% pass on AES-GCM 128-bit/256-bit test vectors and zero unauthenticated plaintext exposure on tag mismatch.
 - **RFC 8439:** 100% pass on ChaCha20-Poly1305 test fixtures.

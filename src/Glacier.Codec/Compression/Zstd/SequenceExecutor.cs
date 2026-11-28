@@ -128,11 +128,11 @@ public struct SequenceExecutor
         // 1. Copy literals
         if (literalLength > 0)
         {
-            if (litIdx + literalLength > literals.Length)
+            if (literalLength > literals.Length - litIdx)
             {
                 throw new InvalidDataException("Literals buffer underflow during sequence execution.");
             }
-            if (dstIdx + literalLength > destination.Length)
+            if (literalLength > destination.Length - dstIdx)
             {
                 throw new InvalidDataException("Destination buffer overflow during sequence literals copy.");
             }
@@ -150,7 +150,7 @@ public struct SequenceExecutor
             {
                 throw new InvalidDataException($"Match offset ({offset}) exceeds decoded history window boundary ({dstIdx}).");
             }
-            if (dstIdx + matchLength > destination.Length)
+            if (matchLength > destination.Length - dstIdx)
             {
                 throw new InvalidDataException("Destination buffer overflow during sequence match copy.");
             }

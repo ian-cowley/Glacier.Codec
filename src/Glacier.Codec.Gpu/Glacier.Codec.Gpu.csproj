@@ -7,6 +7,7 @@
     <LangVersion>preview</LangVersion>
     <TieredPGO>true</TieredPGO>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <NoWarn>$(NoWarn);CS1591;CS8981;SYSLIB5003</NoWarn>
 
     <!-- Native AOT & Trimming Compliance -->
@@ -31,10 +32,20 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
+  <PropertyGroup Condition="Exists('../../../Glacier.Compute/src/Glacier.Compute/Glacier.Compute.csproj') and '$(UseLocalProjectReferences)' != 'false'">
+    <DefineConstants>$(DefineConstants);USE_LOCAL_GLACIER_COMPUTE</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="Exists('../../../Glacier.Compute/src/Glacier.Compute/Glacier.Compute.csproj') and '$(UseLocalProjectReferences)' != 'false'">
+    <ProjectReference Include="../../../Glacier.Compute/src/Glacier.Compute/Glacier.Compute.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="!Exists('../../../Glacier.Compute/src/Glacier.Compute/Glacier.Compute.csproj') or '$(UseLocalProjectReferences)' == 'false'">
+    <PackageReference Include="Glacier.Compute" />
+  </ItemGroup>
+
   <ItemGroup>
-    <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
-    <PackageReference Include="Vortice.Direct3D12" Version="3.8.3" />
-    <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
+    <PackageReference Include="Vortice.D3DCompiler" />
+    <PackageReference Include="Vortice.Direct3D12" />
+    <PackageReference Include="Vortice.DXGI" />
   </ItemGroup>
 
   <ItemGroup>

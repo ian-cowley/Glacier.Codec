@@ -3,8 +3,9 @@ namespace Glacier.Codec.Cryptography.Kdf;
 using System;
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
-using System.Threading.Tasks;
+using System.Threading;
 using Glacier.Codec.Memory;
 
 /// <summary>
@@ -21,6 +22,103 @@ public sealed class Argon2id : IKeyDerivationFunction, IDisposable
     public const int Type = 2;               // 2 (Argon2id)
     public const int BlockSize = 1024;       // 1024 bytes per block (128 ulongs)
     public const int WordsPerBlock = 128;
+
+    private const long ParallelSliceThreshold = 64;
+
+    private static readonly int s_workerCount = Math.Max(1, Environment.ProcessorCount);
+    private static readonly Thread[] s_threads = new Thread[s_workerCount - 1];
+    private static readonly WorkerSlot[] s_workers = CreateWorkerSlots(s_workerCount - 1);
+    private static volatile bool s_shutdown;
+
+    private sealed unsafe class WorkerSlot
+    {
+        public readonly AutoResetEvent StartEvent = new(false);
+        public int Claimed;
+        public int Completed = 1;
+        public int* RemainingPtr;
+        public int StartLane;
+        public int LaneStride;
+        public int TotalLanes;
+        public int Pass;
+        public int Slice;
+        public int TotalPasses;
+        public long TotalBlocks;
+        public long LaneLength;
+        public long SliceLength;
+        public ulong* MatrixWords;
+    }
+
+    private static WorkerSlot[] CreateWorkerSlots(int count)
+    {
+        var slots = new WorkerSlot[count];
+        for (int i = 0; i < slots.Length; i++)
+        {
+            slots[i] = new WorkerSlot();
+        }
+        return slots;
+    }
+
+    static Argon2id()
+    {
+        for (int i = 0; i < s_workers.Length; i++)
+        {
+            int slotIndex = i;
+            s_threads[i] = new Thread(() => WorkerLoop(slotIndex))
+            {
+                IsBackground = true,
+                Name = $"Argon2idParallelWorker-{slotIndex + 1}",
+                Priority = ThreadPriority.AboveNormal
+            };
+            s_threads[i].Start();
+        }
+
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        {
+            s_shutdown = true;
+            for (int i = 0; i < s_workers.Length; i++)
+            {
+                s_workers[i]?.StartEvent.Set();
+            }
+        };
+    }
+
+    private static unsafe void WorkerLoop(int slotIndex)
+    {
+        WorkerSlot slot = s_workers[slotIndex];
+        while (!s_shutdown)
+        {
+            slot.StartEvent.WaitOne();
+            if (s_shutdown) break;
+
+            int* remPtr = slot.RemainingPtr;
+            try
+            {
+                int startLane = slot.StartLane;
+                int laneStride = slot.LaneStride;
+                int p = slot.TotalLanes;
+                int pass = slot.Pass;
+                int slice = slot.Slice;
+                int t = slot.TotalPasses;
+                long mPrime = slot.TotalBlocks;
+                long q = slot.LaneLength;
+                long s = slot.SliceLength;
+                ulong* matrixWords = slot.MatrixWords;
+
+                for (int lane = startLane; lane < p; lane += laneStride)
+                {
+                    ExecuteSliceOnLane(lane, pass, slice, p, t, mPrime, q, s, matrixWords);
+                }
+            }
+            finally
+            {
+                if (remPtr != null)
+                {
+                    Interlocked.Decrement(ref *remPtr);
+                }
+                Volatile.Write(ref slot.Completed, 1);
+            }
+        }
+    }
 
     private bool _disposed;
 
@@ -40,8 +138,8 @@ public sealed class Argon2id : IKeyDerivationFunction, IDisposable
             throw new ArgumentOutOfRangeException(nameof(iterations), "Iterations must be at least 1.");
         if (parallelism < 1)
             throw new ArgumentOutOfRangeException(nameof(parallelism), "Parallelism must be at least 1.");
-        if (memoryKb < 8 * parallelism)
-            throw new ArgumentOutOfRangeException(nameof(memoryKb), $"Memory must be at least 8 * parallelism KiB ({8 * parallelism} KiB).");
+        if ((long)memoryKb < 8L * parallelism)
+            throw new ArgumentOutOfRangeException(nameof(memoryKb), $"Memory must be at least 8 * parallelism KiB ({8L * parallelism} KiB).");
 
         Iterations = iterations;
         MemoryKb = memoryKb;
@@ -80,6 +178,12 @@ public sealed class Argon2id : IKeyDerivationFunction, IDisposable
         int memoryKb,
         int parallelism)
     {
+        if (iterations < 1)
+            throw new ArgumentOutOfRangeException(nameof(iterations), "Iterations must be at least 1.");
+        if (parallelism < 1)
+            throw new ArgumentOutOfRangeException(nameof(parallelism), "Parallelism must be at least 1.");
+        if ((long)memoryKb < 8L * parallelism)
+            throw new ArgumentOutOfRangeException(nameof(memoryKb), $"Memory must be at least 8 * parallelism KiB ({8L * parallelism} KiB).");
         if (derivedKey.Length < 4)
             throw new ArgumentException("Derived key length must be at least 4 bytes.", nameof(derivedKey));
 
@@ -89,23 +193,37 @@ public sealed class Argon2id : IKeyDerivationFunction, IDisposable
         int tagLen = derivedKey.Length;
 
         // Total blocks m' = 4 * p * floor(m / (4 * p))
-        int mPrime = 4 * p * (m / (4 * p));
-        int q = mPrime / p;         // Lane length in blocks
-        int s = q / 4;              // Segment length in blocks (slice length)
-
-        int totalBytes = mPrime * BlockSize;
+        (long mPrime, long q, long s, long totalBytes) = ComputeMatrixGeometry(m, p);
+        if ((ulong)totalBytes > (ulong)nuint.MaxValue)
+        {
+            throw new OutOfMemoryException($"Argon2id matrix size ({totalBytes} bytes) exceeds platform addressable memory.");
+        }
 
         // 1. Compute H0 initial digest (64 bytes)
         Span<byte> h0 = stackalloc byte[64];
         ComputeH0(p, tagLen, m, t, Version, Type, password, salt, secret, associatedData, h0);
 
-        // 2. Rent 64-byte aligned unmanaged slab for memory matrix
-        using SlabLease lease = UnmanagedSlabPool.Shared.Rent(totalBytes);
-        byte* matrixPtr = (byte*)lease.Pointer;
-        ulong* matrixWords = (ulong*)matrixPtr;
+        // 2. Rent 64-byte aligned unmanaged slab (<= 2 GB-1) or allocate large aligned native matrix (>= 2 GB)
+        SlabLease lease = default;
+        byte* matrixPtr = null;
+        bool ownsRawNative = false;
 
         try
         {
+            if (totalBytes <= int.MaxValue)
+            {
+                lease = UnmanagedSlabPool.Shared.Rent((int)totalBytes);
+                matrixPtr = (byte*)lease.Pointer;
+            }
+            else
+            {
+                matrixPtr = (byte*)NativeMemory.AlignedAlloc((nuint)totalBytes, CachelineAlignedBuffer.CachelineAlignment);
+                NativeMemory.Clear(matrixPtr, (nuint)totalBytes);
+                ownsRawNative = true;
+            }
+
+            ulong* matrixWords = (ulong*)matrixPtr;
+
             // 3. Initialize first two blocks per lane (B[i, 0] and B[i, 1])
             Span<byte> seedBuf = stackalloc byte[72];
             h0.CopyTo(seedBuf.Slice(0, 64));
@@ -114,29 +232,27 @@ public sealed class Argon2id : IKeyDerivationFunction, IDisposable
             {
                 BinaryPrimitives.WriteInt32LittleEndian(seedBuf.Slice(64, 4), 0);
                 BinaryPrimitives.WriteInt32LittleEndian(seedBuf.Slice(68, 4), lane);
-                Span<byte> b0 = new(matrixPtr + (lane * q + 0) * BlockSize, BlockSize);
+                Span<byte> b0 = new(matrixPtr + ((nuint)lane * (nuint)q) * (nuint)BlockSize, BlockSize);
                 ComputeHPrime(seedBuf, b0);
 
                 BinaryPrimitives.WriteInt32LittleEndian(seedBuf.Slice(64, 4), 1);
-                Span<byte> b1 = new(matrixPtr + (lane * q + 1) * BlockSize, BlockSize);
+                Span<byte> b1 = new(matrixPtr + ((nuint)lane * (nuint)q + 1) * (nuint)BlockSize, BlockSize);
                 ComputeHPrime(seedBuf, b1);
             }
 
             // 4. Multi-pass block iteration
-            for (int pass = 0; pass < t; pass++)
+            if (p > 1 && s >= ParallelSliceThreshold)
             {
-                for (int slice = 0; slice < 4; slice++)
-                {
-                    for (int lane = 0; lane < p; lane++)
-                    {
-                        ExecuteSliceOnLane(lane, pass, slice, p, t, mPrime, q, s, matrixWords);
-                    }
-                }
+                ExecuteParallelPasses(p, t, mPrime, q, s, matrixWords);
+            }
+            else
+            {
+                ExecutePassesSequential(p, t, mPrime, q, s, matrixWords);
             }
 
             // 5. Finalization: XOR last column of all lanes
             ulong* cBlock = stackalloc ulong[WordsPerBlock];
-            ulong* firstLaneLastCol = matrixWords + (0 * q + (q - 1)) * WordsPerBlock;
+            ulong* firstLaneLastCol = matrixWords + ((nuint)(q - 1) * (nuint)WordsPerBlock);
             for (int k = 0; k < WordsPerBlock; k++)
             {
                 cBlock[k] = firstLaneLastCol[k];
@@ -144,7 +260,7 @@ public sealed class Argon2id : IKeyDerivationFunction, IDisposable
 
             for (int lane = 1; lane < p; lane++)
             {
-                ulong* laneLastCol = matrixWords + (lane * q + (q - 1)) * WordsPerBlock;
+                ulong* laneLastCol = matrixWords + (((nuint)lane * (nuint)q + (nuint)(q - 1)) * (nuint)WordsPerBlock);
                 for (int k = 0; k < WordsPerBlock; k++)
                 {
                     cBlock[k] ^= laneLastCol[k];
@@ -160,9 +276,202 @@ public sealed class Argon2id : IKeyDerivationFunction, IDisposable
         }
         finally
         {
-            // Wipe memory matrix securely before returning slab
-            CryptographicOperations.ZeroMemory(lease.Span.Slice(0, totalBytes));
+            if (matrixPtr != null)
+            {
+                if (ownsRawNative)
+                {
+                    ZeroMemoryChunked(matrixPtr, (nuint)totalBytes);
+                    NativeMemory.AlignedFree(matrixPtr);
+                }
+                else
+                {
+                    CryptographicOperations.ZeroMemory(new Span<byte>(matrixPtr, (int)totalBytes));
+                    lease.Dispose();
+                }
+            }
             CryptographicOperations.ZeroMemory(h0);
+        }
+    }
+
+    internal static (long mPrime, long q, long s, long totalBytes) ComputeMatrixGeometry(int memoryKb, int parallelism)
+    {
+        long pL = parallelism;
+        long mPrime = 4L * pL * (memoryKb / (4L * pL));
+        long q = mPrime / pL;
+        long s = q / 4L;
+        long totalBytes = mPrime * BlockSize;
+        return (mPrime, q, s, totalBytes);
+    }
+
+    private static unsafe void ZeroMemoryChunked(byte* ptr, nuint length)
+    {
+        nuint offset = 0;
+        while (offset < length)
+        {
+            nuint remaining = length - offset;
+            int chunk = remaining > (nuint)int.MaxValue ? int.MaxValue : (int)remaining;
+            CryptographicOperations.ZeroMemory(new Span<byte>(ptr + offset, chunk));
+            offset += (nuint)chunk;
+        }
+    }
+
+    private static unsafe void ExecutePassesSequential(
+        int p,
+        int t,
+        long mPrime,
+        long q,
+        long s,
+        ulong* matrixWords)
+    {
+        for (int pass = 0; pass < t; pass++)
+        {
+            for (int slice = 0; slice < 4; slice++)
+            {
+                for (int lane = 0; lane < p; lane++)
+                {
+                    ExecuteSliceOnLane(lane, pass, slice, p, t, mPrime, q, s, matrixWords);
+                }
+            }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int TryClaimWorkerSlots(int maxClaims, Span<int> claimedSlots)
+    {
+        if (s_shutdown) return 0;
+
+        int claimedCount = 0;
+        for (int i = 0; i < s_workers.Length && claimedCount < maxClaims; i++)
+        {
+            if (Volatile.Read(ref s_workers[i].Claimed) == 0 &&
+                Interlocked.CompareExchange(ref s_workers[i].Claimed, 1, 0) == 0)
+            {
+                claimedSlots[claimedCount++] = i;
+            }
+        }
+        return claimedCount;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void WaitForSliceWorkers(ref int remaining, ReadOnlySpan<int> claimedSlots)
+    {
+        if (Volatile.Read(ref remaining) != 0)
+        {
+            var sw = new SpinWait();
+            while (Volatile.Read(ref remaining) != 0)
+            {
+                sw.SpinOnce();
+            }
+        }
+
+        for (int i = 0; i < claimedSlots.Length; i++)
+        {
+            WorkerSlot slot = s_workers[claimedSlots[i]];
+            if (Volatile.Read(ref slot.Completed) == 0)
+            {
+                var sw = new SpinWait();
+                while (Volatile.Read(ref slot.Completed) == 0)
+                {
+                    sw.SpinOnce();
+                }
+            }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static unsafe void ReleaseWorkerSlots(ReadOnlySpan<int> claimedSlots)
+    {
+        for (int i = 0; i < claimedSlots.Length; i++)
+        {
+            WorkerSlot slot = s_workers[claimedSlots[i]];
+            slot.RemainingPtr = null;
+            slot.MatrixWords = null;
+            Volatile.Write(ref slot.Claimed, 0);
+        }
+    }
+
+    private static unsafe void ExecuteParallelPasses(
+        int p,
+        int t,
+        long mPrime,
+        long q,
+        long s,
+        ulong* matrixWords)
+    {
+        int maxClaims = Math.Min(p - 1, s_workers.Length);
+        if (maxClaims <= 0)
+        {
+            ExecutePassesSequential(p, t, mPrime, q, s, matrixWords);
+            return;
+        }
+
+        Span<int> claimedSlots = maxClaims <= 128
+            ? stackalloc int[maxClaims]
+            : new int[maxClaims];
+        int claimedCount = TryClaimWorkerSlots(maxClaims, claimedSlots);
+        if (claimedCount == 0)
+        {
+            ExecutePassesSequential(p, t, mPrime, q, s, matrixWords);
+            return;
+        }
+
+        ReadOnlySpan<int> activeSlots = claimedSlots.Slice(0, claimedCount);
+        int numWorkers = claimedCount + 1;
+
+        int remaining = 0;
+        int dispatchedCount = 0;
+
+        try
+        {
+            for (int pass = 0; pass < t; pass++)
+            {
+                for (int slice = 0; slice < 4; slice++)
+                {
+                    Volatile.Write(ref remaining, claimedCount);
+                    dispatchedCount = 0;
+
+                    for (int i = 0; i < claimedCount; i++)
+                    {
+                        WorkerSlot slot = s_workers[activeSlots[i]];
+                        slot.StartLane = i + 1;
+                        slot.LaneStride = numWorkers;
+                        slot.TotalLanes = p;
+                        slot.Pass = pass;
+                        slot.Slice = slice;
+                        slot.TotalPasses = t;
+                        slot.TotalBlocks = mPrime;
+                        slot.LaneLength = q;
+                        slot.SliceLength = s;
+                        slot.MatrixWords = matrixWords;
+                        slot.RemainingPtr = &remaining;
+                        Volatile.Write(ref slot.Completed, 0);
+                        slot.StartEvent.Set();
+                        dispatchedCount++;
+                    }
+
+                    // Calling thread executes lanes 0, numWorkers, 2*numWorkers, ... inline.
+                    for (int lane = 0; lane < p; lane += numWorkers)
+                    {
+                        ExecuteSliceOnLane(lane, pass, slice, p, t, mPrime, q, s, matrixWords);
+                    }
+
+                    WaitForSliceWorkers(ref remaining, activeSlots);
+                    dispatchedCount = 0;
+                }
+            }
+        }
+        finally
+        {
+            if (dispatchedCount > 0)
+            {
+                if (dispatchedCount < claimedCount)
+                {
+                    Interlocked.Add(ref remaining, -(claimedCount - dispatchedCount));
+                }
+                WaitForSliceWorkers(ref remaining, activeSlots.Slice(0, dispatchedCount));
+            }
+
+            ReleaseWorkerSlots(activeSlots);
         }
     }
 
@@ -172,20 +481,22 @@ public sealed class Argon2id : IKeyDerivationFunction, IDisposable
         int slice,
         int totalLanes,
         int totalPasses,
-        int totalBlocks,
-        int laneLength,
-        int sliceLength,
+        long totalBlocks,
+        long laneLength,
+        long sliceLength,
         ulong* matrixWords)
     {
         ulong* addrBlock = stackalloc ulong[WordsPerBlock];
         int startIdx = (pass == 0 && slice == 0) ? 2 : 0;
+        int sliceLenInt = (int)sliceLength;
+        int laneLenInt = (int)laneLength;
 
-        for (int idx = startIdx; idx < sliceLength; idx++)
+        for (int idx = startIdx; idx < sliceLenInt; idx++)
         {
-            int currentCol = slice * sliceLength + idx;
-            int prevCol = (currentCol > 0) ? currentCol - 1 : laneLength - 1;
+            int currentCol = slice * sliceLenInt + idx;
+            int prevCol = (currentCol > 0) ? currentCol - 1 : laneLenInt - 1;
 
-            ulong* prev = matrixWords + (lane * laneLength + prevCol) * WordsPerBlock;
+            ulong* prev = matrixWords + (((nuint)lane * (nuint)laneLength + (nuint)prevCol) * (nuint)WordsPerBlock);
 
             uint j1, j2;
             if (pass == 0 && slice < 2)
@@ -217,10 +528,10 @@ public sealed class Argon2id : IKeyDerivationFunction, IDisposable
             }
 
             var (lRef, z) = Argon2idKernel.ComputeReferenceIndex(
-                j1, j2, pass, slice, lane, idx, sliceLength, laneLength, totalLanes);
+                j1, j2, pass, slice, lane, idx, sliceLenInt, laneLenInt, totalLanes);
 
-            ulong* refBlock = matrixWords + (lRef * laneLength + z) * WordsPerBlock;
-            ulong* destBlock = matrixWords + (lane * laneLength + currentCol) * WordsPerBlock;
+            ulong* refBlock = matrixWords + (((nuint)lRef * (nuint)laneLength + (nuint)z) * (nuint)WordsPerBlock);
+            ulong* destBlock = matrixWords + (((nuint)lane * (nuint)laneLength + (nuint)currentCol) * (nuint)WordsPerBlock);
 
             if (pass == 0)
             {

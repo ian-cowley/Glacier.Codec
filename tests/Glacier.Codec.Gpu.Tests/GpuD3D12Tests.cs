@@ -39,11 +39,14 @@ public class GpuD3D12Tests
         if (engine is null) return;
 
         using var factory = Vortice.DXGI.DXGI.CreateDXGIFactory1<Vortice.DXGI.IDXGIFactory6>();
-        for (uint i = 0; factory.EnumAdapterByGpuPreference(i, Vortice.DXGI.GpuPreference.MinimumPower, out Vortice.DXGI.IDXGIAdapter1 a).Success; i++)
+        for (uint i = 0; factory.EnumAdapterByGpuPreference(i, Vortice.DXGI.GpuPreference.MinimumPower, out Vortice.DXGI.IDXGIAdapter1? a).Success; i++)
         {
-            var d = a.Description1;
-            _output.WriteLine($"[MinPower Adapter #{i}] '{d.Description}' (VendorId: 0x{d.VendorId:X4}, DedicatedVRAM: {d.DedicatedVideoMemory})");
-            a.Dispose();
+            if (a is null) continue;
+            using (a)
+            {
+                var d = a.Description1;
+                _output.WriteLine($"[MinPower Adapter #{i}] '{d.Description}' (VendorId: 0x{d.VendorId:X4}, DedicatedVRAM: {d.DedicatedVideoMemory})");
+            }
         }
 
         for (uint i = 0; factory.EnumAdapters1(i, out Vortice.DXGI.IDXGIAdapter1 a).Success; i++)
@@ -140,5 +143,50 @@ public class GpuD3D12Tests
 
         double sha256Mh = (count / sw.Elapsed.TotalSeconds) / 1_000_000.0;
         _output.WriteLine($"[D3D12 {engine.AdapterName}] SHA-256 Throughput: {sha256Mh:F2} MH/s in {sw.ElapsedMilliseconds} ms");
+    }
+
+    [Fact]
+    [Trait("Category", "Gpu")]
+    public void D3D12Engine_SequentialRuns_ZeroesFoundCountAndGrowsPool()
+    {
+        using var engine = TryCreateD3D12Engine();
+        if (engine is null) return;
+
+        byte[] template = new byte[64];
+        new Random(2026).NextBytes(template.AsSpan(0, 60));
+
+        // Run 1: 16-bit prefix mask 0x0000FFFF -> must return matches starting with 0000
+        uint[] run1 = engine.SearchNonceBlake3(template, 0, 0x0000FFFFu, 500_000, flags: 0x0B, maxResults: 4);
+        Assert.InRange(run1.Length, 1, 4);
+
+        Span<byte> hash = stackalloc byte[32];
+        foreach (uint nonce in run1)
+        {
+            byte[] block = (byte[])template.Clone();
+            BitConverter.TryWriteBytes(block.AsSpan(60, 4), nonce);
+            Blake3Hasher.Hash(block, hash);
+            Assert.Equal(0, hash[0]);
+            Assert.Equal(0, hash[1]);
+            Assert.StartsWith("0000", Convert.ToHexString(hash));
+        }
+
+        // Run 2 on the same engine instance with impossible mask: proves GPU foundCountGpu was zeroed
+        uint[] run2 = engine.SearchNonceBlake3(template, 0, 0xFFFFFFFFu, 10_000, flags: 0x0B, maxResults: 4);
+        Assert.Empty(run2);
+
+        // Run 3 with maxResults > initial 64 capacity: proves pooled buffers grow cleanly
+        uint[] run3 = engine.SearchNonceBlake3(template, 0, 0x000000FFu, 200_000, flags: 0x0B, maxResults: 96);
+        Assert.True(run3.Length > 64 && run3.Length <= 96);
+        foreach (uint nonce in run3)
+        {
+            byte[] block = (byte[])template.Clone();
+            BitConverter.TryWriteBytes(block.AsSpan(60, 4), nonce);
+            Blake3Hasher.Hash(block, hash);
+            Assert.Equal(0, hash[0]);
+        }
+
+        // Run 4: zero searchCount / maxResults edge cases
+        Assert.Empty(engine.SearchNonceBlake3(template, 0, 0x0000FFFFu, 0, flags: 0x0B, maxResults: 4));
+        Assert.Empty(engine.SearchNonceSha256(template, 0, 0xFFFF0000u, 1000, maxResults: 0));
     }
 }

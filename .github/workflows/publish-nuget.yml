@@ -31,10 +31,13 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Install Glacier CLI
+        run: dotnet tool install -g Glacier.Cli
+
       - name: Security Check
         shell: pwsh
         run: |
-          python scripts/security_check.py .
+          glacier security-check .
 
       - name: Restore dependencies
         run: dotnet restore Glacier.Codec.slnx

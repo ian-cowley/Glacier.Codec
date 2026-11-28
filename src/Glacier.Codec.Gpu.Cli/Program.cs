@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using Glacier.Codec.Gpu;
@@ -48,6 +49,36 @@ public static class Program
         0 => 0x00000000,
         _ => (uint)(0xFFFFFFFFUL << (int)(32 - difficultyBits))
     };
+
+    public static uint ComputeBlake3DifficultyMask(uint difficultyBits)
+        => BinaryPrimitives.ReverseEndianness(ComputeDifficultyMask(difficultyBits));
+
+    public static uint ComputeDifficultyMask(uint difficultyBits, string algorithm)
+        => string.Equals(algorithm, "blake3", StringComparison.OrdinalIgnoreCase)
+            ? ComputeBlake3DifficultyMask(difficultyBits)
+            : ComputeDifficultyMask(difficultyBits);
+
+    public static bool HasLeadingZeroBits(ReadOnlySpan<byte> hash, uint difficultyBits)
+    {
+        if (difficultyBits == 0) return true;
+        uint maxBits = (uint)hash.Length * 8u;
+        if (difficultyBits > maxBits) difficultyBits = maxBits;
+
+        int fullBytes = (int)(difficultyBits / 8);
+        for (int i = 0; i < fullBytes; i++)
+        {
+            if (hash[i] != 0) return false;
+        }
+
+        int remBits = (int)(difficultyBits % 8);
+        if (remBits > 0)
+        {
+            byte mask = (byte)(0xFF << (8 - remBits));
+            if ((hash[fullBytes] & mask) != 0) return false;
+        }
+
+        return true;
+    }
 
     public static CliParseResult ParseArgs(string[]? args)
     {
@@ -327,7 +358,7 @@ public static class Program
         byte[] template = new byte[64];
         Random.Shared.NextBytes(template.AsSpan(0, 60));
 
-        uint mask = ComputeDifficultyMask(difficultyBits);
+        uint mask = ComputeDifficultyMask(difficultyBits, algo);
 
         Console.ForegroundColor = ConsoleColor.Magenta;
         Console.WriteLine($"[CUDA Miner] Starting GPU Nonce Miner ({algo.ToUpperInvariant()}) on {dev.DeviceName}...");
@@ -359,6 +390,11 @@ public static class Program
                     byte[] block = (byte[])template.Clone();
                     BitConverter.TryWriteBytes(block.AsSpan(60, 4), nonce);
                     Blake3Hasher.Hash(block, hash);
+                    if (!HasLeadingZeroBits(hash, difficultyBits))
+                    {
+                        throw new InvalidOperationException(
+                            $"CUDA BLAKE3 candidate nonce 0x{nonce:X8} failed CPU verification for {difficultyBits} leading zero bits: {Convert.ToHexString(hash)}");
+                    }
                     Console.ForegroundColor = ConsoleColor.Green;
                     Console.WriteLine($"  >>> MATCH: 0x{nonce:X8} | Hash: {Convert.ToHexString(hash)}");
                     Console.ResetColor();
@@ -368,6 +404,7 @@ public static class Program
         else
         {
             using var engine = new GpuSha256Engine(dev);
+            Span<byte> hash = stackalloc byte[32];
             for (int round = 1; round <= 3; round++)
             {
                 var sw = Stopwatch.StartNew();
@@ -382,7 +419,12 @@ public static class Program
                     totalFound++;
                     byte[] block = (byte[])template.Clone();
                     BitConverter.TryWriteBytes(block.AsSpan(60, 4), nonce);
-                    byte[] hash = SHA256.HashData(block);
+                    SHA256.HashData(block, hash);
+                    if (!HasLeadingZeroBits(hash, difficultyBits))
+                    {
+                        throw new InvalidOperationException(
+                            $"CUDA SHA-256 candidate nonce 0x{nonce:X8} failed CPU verification for {difficultyBits} leading zero bits: {Convert.ToHexString(hash)}");
+                    }
                     Console.ForegroundColor = ConsoleColor.Green;
                     Console.WriteLine($"  >>> MATCH: 0x{nonce:X8} | Hash: {Convert.ToHexString(hash)}");
                     Console.ResetColor();
@@ -400,7 +442,7 @@ public static class Program
         byte[] template = new byte[64];
         Random.Shared.NextBytes(template.AsSpan(0, 60));
 
-        uint mask = ComputeDifficultyMask(difficultyBits);
+        uint mask = ComputeDifficultyMask(difficultyBits, algo);
 
         Console.ForegroundColor = ConsoleColor.Magenta;
         Console.WriteLine($"[Direct3D 12 Miner] Starting GPU Nonce Miner ({algo.ToUpperInvariant()}) on {engine.AdapterName}...");
@@ -437,6 +479,12 @@ public static class Program
 
                 if (algo == "blake3") Blake3Hasher.Hash(block, hash);
                 else SHA256.HashData(block, hash);
+
+                if (!HasLeadingZeroBits(hash, difficultyBits))
+                {
+                    throw new InvalidOperationException(
+                        $"D3D12 {algo.ToUpperInvariant()} candidate nonce 0x{nonce:X8} failed CPU verification for {difficultyBits} leading zero bits: {Convert.ToHexString(hash)}");
+                }
 
                 Console.ForegroundColor = ConsoleColor.Green;
                 Console.WriteLine($"  >>> MATCH: 0x{nonce:X8} | Hash: {Convert.ToHexString(hash)}");

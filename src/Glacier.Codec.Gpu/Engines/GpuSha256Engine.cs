@@ -117,6 +117,8 @@ public sealed class GpuSha256Engine : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (headerTemplate.Length < 60)
             throw new ArgumentException("Header template must be at least 60 bytes.", nameof(headerTemplate));
+        if (searchCount == 0 || maxResults == 0)
+            return Array.Empty<uint>();
 
         _device.MakeCurrent();
 

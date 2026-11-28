@@ -10,7 +10,7 @@ using System.Security.Cryptography;
 /// Pure C# unrolled 24-round Keccak-f[1600] permutation and sponge engine (FIPS 202).
 /// Supports SHA3-256, SHA3-512, SHAKE-128, SHAKE-256, SampleNTT, and SamplePolyCBD_2 with zero heap allocations.
 /// </summary>
-internal struct KeccakSponge
+internal struct KeccakSponge : IDisposable
 {
     private static readonly ulong[] RoundConstants =
     [
@@ -36,6 +36,32 @@ internal struct KeccakSponge
             {
                 new Span<ulong>(s, 25).Clear();
             }
+        }
+    }
+
+    /// <summary>Zeroizes the internal 1600-bit Keccak state and resets absorption index.</summary>
+    public unsafe void Clear()
+    {
+        fixed (ulong* s = _state)
+        {
+            CryptographicOperations.ZeroMemory(new Span<byte>(s, 25 * sizeof(ulong)));
+        }
+        _byteIndex = 0;
+    }
+
+    /// <summary>Resets the sponge to its initial zeroed state for reuse.</summary>
+    public void Reset() => Clear();
+
+    /// <summary>Zeroizes the internal Keccak state upon scope exit.</summary>
+    public void Dispose() => Clear();
+
+    internal int ByteIndex => _byteIndex;
+
+    internal unsafe ulong GetStateWord(int index)
+    {
+        fixed (ulong* s = _state)
+        {
+            return s[index];
         }
     }
 
@@ -200,7 +226,7 @@ internal struct KeccakSponge
     /// <summary>FIPS 202 SHA3-256 (rate = 136 bytes, padding = 0x06, 32-byte digest).</summary>
     public static void Sha3_256(ReadOnlySpan<byte> input, Span<byte> output)
     {
-        var sponge = new KeccakSponge(rateInBytes: 136);
+        using var sponge = new KeccakSponge(rateInBytes: 136);
         sponge.Absorb(input);
         sponge.Pad(0x06);
         sponge.Squeeze(output.Slice(0, 32));
@@ -209,7 +235,7 @@ internal struct KeccakSponge
     /// <summary>FIPS 202 SHA3-512 (rate = 72 bytes, padding = 0x06, 64-byte digest).</summary>
     public static void Sha3_512(ReadOnlySpan<byte> input, Span<byte> output)
     {
-        var sponge = new KeccakSponge(rateInBytes: 72);
+        using var sponge = new KeccakSponge(rateInBytes: 72);
         sponge.Absorb(input);
         sponge.Pad(0x06);
         sponge.Squeeze(output.Slice(0, 64));
@@ -218,7 +244,7 @@ internal struct KeccakSponge
     /// <summary>FIPS 202 SHAKE-128 XOF (rate = 168 bytes, padding = 0x1F).</summary>
     public static void Shake128(ReadOnlySpan<byte> input, Span<byte> output)
     {
-        var sponge = new KeccakSponge(rateInBytes: 168);
+        using var sponge = new KeccakSponge(rateInBytes: 168);
         sponge.Absorb(input);
         sponge.Pad(0x1F);
         sponge.Squeeze(output);
@@ -227,7 +253,7 @@ internal struct KeccakSponge
     /// <summary>FIPS 202 SHAKE-256 XOF (rate = 136 bytes, padding = 0x1F).</summary>
     public static void Shake256(ReadOnlySpan<byte> input, Span<byte> output)
     {
-        var sponge = new KeccakSponge(rateInBytes: 136);
+        using var sponge = new KeccakSponge(rateInBytes: 136);
         sponge.Absorb(input);
         sponge.Pad(0x1F);
         sponge.Squeeze(output);
@@ -249,7 +275,7 @@ internal struct KeccakSponge
     /// </summary>
     public static void SampleNTT(ReadOnlySpan<byte> rho, byte j, byte i, Span<short> aHat)
     {
-        var sponge = new KeccakSponge(rateInBytes: 168);
+        using var sponge = new KeccakSponge(rateInBytes: 168);
         Span<byte> seed = stackalloc byte[34];
         rho.CopyTo(seed.Slice(0, 32));
         seed[32] = j;

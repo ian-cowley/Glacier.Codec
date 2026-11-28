@@ -166,7 +166,7 @@ public static class Lz4FrameCodec
         {
             if (source.Length < 8) throw new InvalidDataException("Truncated skippable frame.");
             uint skipSize = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(4, 4));
-            if (8 + skipSize > (uint)source.Length) throw new InvalidDataException("Skippable frame size exceeds buffer.");
+            if ((ulong)skipSize > (ulong)(source.Length - 8)) throw new InvalidDataException("Skippable frame size exceeds buffer.");
             return 0;
         }
 
@@ -201,14 +201,14 @@ public static class Lz4FrameCodec
         ulong contentSize = 0;
         if (contentSizeFlag)
         {
-            if (src + 8 > source.Length) throw new InvalidDataException("LZ4 truncated content size field.");
+            if (8 > source.Length - src) throw new InvalidDataException("LZ4 truncated content size field.");
             contentSize = BinaryPrimitives.ReadUInt64LittleEndian(source.Slice(src, 8));
             src += 8;
         }
 
         if (dictIdFlag)
         {
-            if (src + 4 > source.Length) throw new InvalidDataException("LZ4 truncated dict ID field.");
+            if (4 > source.Length - src) throw new InvalidDataException("LZ4 truncated dict ID field.");
             src += 4;
         }
 
@@ -225,7 +225,7 @@ public static class Lz4FrameCodec
         // Read Data Blocks
         int dst = 0;
         bool sawEndMark = false;
-        while (src + 4 <= source.Length)
+        while (source.Length - src >= 4)
         {
             uint blockSize = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(src, 4));
             src += 4;
@@ -240,14 +240,14 @@ public static class Lz4FrameCodec
             bool isUncompressed = (blockSize & 0x80000000U) != 0;
             int size = (int)(blockSize & 0x7FFFFFFFU);
 
-            if (src + size > source.Length) throw new InvalidDataException("LZ4 data block truncated.");
+            if (size > source.Length - src) throw new InvalidDataException("LZ4 data block truncated.");
 
             ReadOnlySpan<byte> blockData = source.Slice(src, size);
             src += size;
 
             if (blockChecksum)
             {
-                if (src + 4 > source.Length) throw new InvalidDataException("LZ4 truncated block checksum.");
+                if (4 > source.Length - src) throw new InvalidDataException("LZ4 truncated block checksum.");
                 uint storedBsum = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(src, 4));
                 src += 4;
                 uint computedBsum = XxHash32.Hash(blockData, 0);
@@ -256,13 +256,19 @@ public static class Lz4FrameCodec
 
             if (isUncompressed)
             {
-                if (dst + size > destination.Length) throw new InvalidDataException("Destination buffer too small.");
+                if (size > destination.Length - dst) throw new InvalidDataException("Destination buffer too small.");
                 blockData.CopyTo(destination.Slice(dst, size));
                 dst += size;
             }
-            else
+            else if (blockIndependence)
             {
                 int decomp = Lz4Codec.Decompress(blockData, destination.Slice(dst));
+                dst += decomp;
+            }
+            else
+            {
+                int historyStart = Math.Max(0, dst - Lz4Constants.MaxDistance);
+                int decomp = Lz4Codec.DecompressFromOffset(blockData, destination, dst, historyStart);
                 dst += decomp;
             }
         }
@@ -280,7 +286,7 @@ public static class Lz4FrameCodec
         // Verify Content Checksum if requested
         if (contentChecksumFlag)
         {
-            if (src + 4 > source.Length) throw new InvalidDataException("LZ4 truncated content checksum.");
+            if (4 > source.Length - src) throw new InvalidDataException("LZ4 truncated content checksum.");
             uint storedCsum = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(src, 4));
             src += 4;
 

@@ -7,6 +7,7 @@
     <LangVersion>preview</LangVersion>
     <TieredPGO>true</TieredPGO>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <NoWarn>$(NoWarn);CS1591;CS8981;SYSLIB5003</NoWarn>
 
     <!-- Native AOT & Trimming Compliance -->

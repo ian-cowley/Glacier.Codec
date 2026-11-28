@@ -17,11 +17,17 @@ internal static unsafe class AesGcmParallelEngine
 {
     private static readonly int s_workerCount = Math.Clamp(Environment.ProcessorCount, 1, 16);
     private static readonly Thread[] s_threads = new Thread[s_workerCount - 1];
-    private static readonly AutoResetEvent[] s_startEvents = new AutoResetEvent[s_workerCount - 1];
-    private static int s_remainingWorkers;
-    private static readonly WorkerState[] s_workerStates = new WorkerState[s_workerCount];
-    private static readonly object s_dispatchLock = new();
+    private static readonly WorkerSlot[] s_workers = CreateWorkerSlots(s_workerCount - 1);
     private static volatile bool s_shutdown;
+
+    private sealed class WorkerSlot
+    {
+        public readonly AutoResetEvent StartEvent = new(false);
+        public int Claimed;
+        public int Completed;
+        public int* RemainingPtr;
+        public WorkerState State;
+    }
 
     private struct WorkerState
     {
@@ -41,16 +47,25 @@ internal static unsafe class AesGcmParallelEngine
         public int Mode; // 1 = Encrypt (CTR then GHASH), 2 = Decrypt GHASH only, 3 = Decrypt CTR only
     }
 
+    private static WorkerSlot[] CreateWorkerSlots(int count)
+    {
+        var slots = new WorkerSlot[count];
+        for (int i = 0; i < count; i++)
+        {
+            slots[i] = new WorkerSlot();
+        }
+        return slots;
+    }
+
     static AesGcmParallelEngine()
     {
-        for (int i = 0; i < s_workerCount - 1; i++)
+        for (int i = 0; i < s_workers.Length; i++)
         {
-            s_startEvents[i] = new AutoResetEvent(false);
-            int threadIndex = i + 1;
-            s_threads[i] = new Thread(() => WorkerLoop(threadIndex))
+            int slotIndex = i;
+            s_threads[i] = new Thread(() => WorkerLoop(slotIndex))
             {
                 IsBackground = true,
-                Name = $"AesGcmParallelWorker-{threadIndex}",
+                Name = $"AesGcmParallelWorker-{slotIndex + 1}",
                 Priority = ThreadPriority.AboveNormal
             };
             s_threads[i].Start();
@@ -59,42 +74,86 @@ internal static unsafe class AesGcmParallelEngine
         AppDomain.CurrentDomain.ProcessExit += (_, _) =>
         {
             s_shutdown = true;
-            for (int i = 0; i < s_workerCount - 1; i++)
+            for (int i = 0; i < s_workers.Length; i++)
             {
-                s_startEvents[i]?.Set();
+                s_workers[i]?.StartEvent.Set();
             }
         };
     }
 
-    private static void WorkerLoop(int workerIndex)
+    private static void WorkerLoop(int slotIndex)
     {
-        int eventIdx = workerIndex - 1;
+        WorkerSlot slot = s_workers[slotIndex];
         while (!s_shutdown)
         {
-            s_startEvents[eventIdx].WaitOne();
+            slot.StartEvent.WaitOne();
             if (s_shutdown) break;
 
+            int* remPtr = slot.RemainingPtr;
             try
             {
-                ExecuteWorkerJob(ref s_workerStates[workerIndex]);
+                ExecuteWorkerJob(ref slot.State);
             }
             finally
             {
-                Interlocked.Decrement(ref s_remainingWorkers);
+                if (remPtr != null)
+                {
+                    Interlocked.Decrement(ref *remPtr);
+                }
+                Volatile.Write(ref slot.Completed, 1);
             }
         }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void WaitForWorkers()
+    private static int TryClaimWorkerSlots(int maxClaims, Span<int> claimedSlots)
     {
-        if (Volatile.Read(ref s_remainingWorkers) == 0)
-            return;
-
-        var spin = new SpinWait();
-        while (Volatile.Read(ref s_remainingWorkers) != 0)
+        int claimedCount = 0;
+        for (int i = 0; i < s_workers.Length && claimedCount < maxClaims; i++)
         {
-            spin.SpinOnce();
+            if (Volatile.Read(ref s_workers[i].Claimed) == 0 &&
+                Interlocked.CompareExchange(ref s_workers[i].Claimed, 1, 0) == 0)
+            {
+                claimedSlots[claimedCount++] = i;
+            }
+        }
+        return claimedCount;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void WaitForClaimedWorkers(ref int remaining, ReadOnlySpan<int> claimedSlots)
+    {
+        if (Volatile.Read(ref remaining) != 0)
+        {
+            var spin = new SpinWait();
+            while (Volatile.Read(ref remaining) != 0)
+            {
+                spin.SpinOnce();
+            }
+        }
+
+        for (int i = 0; i < claimedSlots.Length; i++)
+        {
+            WorkerSlot slot = s_workers[claimedSlots[i]];
+            if (Volatile.Read(ref slot.Completed) == 0)
+            {
+                var spin = new SpinWait();
+                while (Volatile.Read(ref slot.Completed) == 0)
+                {
+                    spin.SpinOnce();
+                }
+            }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ReleaseWorkerSlots(ReadOnlySpan<int> claimedSlots)
+    {
+        for (int i = 0; i < claimedSlots.Length; i++)
+        {
+            WorkerSlot slot = s_workers[claimedSlots[i]];
+            slot.RemainingPtr = null;
+            Volatile.Write(ref slot.Claimed, 0);
         }
     }
 
@@ -171,12 +230,23 @@ internal static unsafe class AesGcmParallelEngine
 
         int totalBytes = plaintext.Length;
         int totalBlocks = (totalBytes + 15) / 16;
-        int numWorkers = Math.Min(s_workerCount, totalBlocks / 256);
-        if (!CpuCapabilities.IsX86_64 || !CpuCapabilities.HasPclmulqdq || numWorkers <= 1)
+        int desiredWorkers = Math.Min(s_workerCount, totalBlocks / 256);
+        if (!CpuCapabilities.IsX86_64 || !CpuCapabilities.HasPclmulqdq || desiredWorkers <= 1)
         {
             AesGcmKernel.Encrypt(roundKeys, hTable, nonce, plaintext, ciphertext, tag, associatedData);
             return;
         }
+
+        Span<int> claimedSlots = stackalloc int[16];
+        int claimedCount = TryClaimWorkerSlots(desiredWorkers - 1, claimedSlots);
+        if (claimedCount == 0)
+        {
+            AesGcmKernel.Encrypt(roundKeys, hTable, nonce, plaintext, ciphertext, tag, associatedData);
+            return;
+        }
+
+        int numWorkers = claimedCount + 1;
+        ReadOnlySpan<int> activeSlots = claimedSlots.Slice(0, claimedCount);
 
         int chunkBlocks = (totalBlocks / numWorkers / 16) * 16;
         if (chunkBlocks == 0) chunkBlocks = totalBlocks / numWorkers;
@@ -215,10 +285,13 @@ internal static unsafe class AesGcmParallelEngine
         fixed (byte* pCipher = ciphertext)
         {
             Vector128<byte>* rkVec = (Vector128<byte>*)rkPtr;
+            int remaining = 0;
+            bool dispatched = false;
+            WorkerState localState = default;
 
-            lock (s_dispatchLock)
+            try
             {
-                Volatile.Write(ref s_remainingWorkers, numWorkers - 1);
+                Volatile.Write(ref remaining, claimedCount);
 
                 for (int w = 0; w < numWorkers; w++)
                 {
@@ -226,7 +299,7 @@ internal static unsafe class AesGcmParallelEngine
                     int len = (w == numWorkers - 1) ? totalBytes - offset : chunkBytes;
                     uint ctrStart = baseCounter + (uint)(w * chunkBlocks);
 
-                    ref var st = ref s_workerStates[w];
+                    ref WorkerState st = ref (w == 0 ? ref localState : ref s_workers[activeSlots[w - 1]].State);
                     st.RoundKeys = rkVec;
                     st.Input = pPlain + offset;
                     st.Output = pCipher + offset;
@@ -244,26 +317,39 @@ internal static unsafe class AesGcmParallelEngine
 
                     if (w > 0)
                     {
-                        s_startEvents[w - 1].Set();
+                        WorkerSlot slot = s_workers[activeSlots[w - 1]];
+                        slot.Completed = 0;
+                        slot.RemainingPtr = &remaining;
+                        slot.StartEvent.Set();
                     }
                 }
+                dispatched = true;
 
                 // Worker 0 runs on calling thread
-                ExecuteWorkerJob(ref s_workerStates[0]);
+                ExecuteWorkerJob(ref localState);
 
-                WaitForWorkers();
+                WaitForClaimedWorkers(ref remaining, activeSlots);
 
-                // Combine GHASH results inside lock to prevent state race under concurrency
+                // Combine GHASH results from local + claimed worker slots
                 Vector128<ulong> hm = PowH(h1, chunkBlocks);
-                yAccum = Vector128.Create(s_workerStates[0].OutYLo, s_workerStates[0].OutYHi);
+                yAccum = Vector128.Create(localState.OutYLo, localState.OutYHi);
 
                 for (int w = 1; w < numWorkers; w++)
                 {
-                    int wLen = s_workerStates[w].Length;
+                    ref WorkerState st = ref s_workers[activeSlots[w - 1]].State;
+                    int wLen = st.Length;
                     int wBlocks = (wLen + 15) / 16;
                     Vector128<ulong> mult = (wBlocks == chunkBlocks) ? hm : PowH(h1, wBlocks);
-                    yAccum = AesGcmKernelPclmul.MulOne(yAccum, mult) ^ Vector128.Create(s_workerStates[w].OutYLo, s_workerStates[w].OutYHi);
+                    yAccum = AesGcmKernelPclmul.MulOne(yAccum, mult) ^ Vector128.Create(st.OutYLo, st.OutYHi);
                 }
+            }
+            finally
+            {
+                if (dispatched)
+                {
+                    WaitForClaimedWorkers(ref remaining, activeSlots);
+                }
+                ReleaseWorkerSlots(activeSlots);
             }
         }
 
@@ -301,11 +387,21 @@ internal static unsafe class AesGcmParallelEngine
 
         int totalBytes = ciphertext.Length;
         int totalBlocks = (totalBytes + 15) / 16;
-        int numWorkers = Math.Min(s_workerCount, totalBlocks / 256);
-        if (!CpuCapabilities.IsX86_64 || !CpuCapabilities.HasPclmulqdq || numWorkers <= 1)
+        int desiredWorkers = Math.Min(s_workerCount, totalBlocks / 256);
+        if (!CpuCapabilities.IsX86_64 || !CpuCapabilities.HasPclmulqdq || desiredWorkers <= 1)
         {
             return AesGcmKernel.Decrypt(roundKeys, hTable, nonce, ciphertext, expectedTag, plaintext, associatedData);
         }
+
+        Span<int> claimedSlots = stackalloc int[16];
+        int claimedCount = TryClaimWorkerSlots(desiredWorkers - 1, claimedSlots);
+        if (claimedCount == 0)
+        {
+            return AesGcmKernel.Decrypt(roundKeys, hTable, nonce, ciphertext, expectedTag, plaintext, associatedData);
+        }
+
+        int numWorkers = claimedCount + 1;
+        ReadOnlySpan<int> activeSlots = claimedSlots.Slice(0, claimedCount);
 
         int chunkBlocks = (totalBlocks / numWorkers / 16) * 16;
         if (chunkBlocks == 0) chunkBlocks = totalBlocks / numWorkers;
@@ -343,15 +439,16 @@ internal static unsafe class AesGcmParallelEngine
         fixed (byte* pPlain = plaintext)
         {
             Vector128<byte>* rkVec = (Vector128<byte>*)rkPtr;
-
             uint baseCounter = BinaryPrimitives.ReadUInt32BigEndian(j0.Slice(12, 4)) + 1;
-
             Vector128<ulong> yAccum;
+            int remaining = 0;
+            bool dispatched = false;
+            WorkerState localState = default;
 
-            lock (s_dispatchLock)
+            try
             {
                 // Phase 1: Parallel GHASH over ciphertext (plaintext destination is completely untouched)
-                Volatile.Write(ref s_remainingWorkers, numWorkers - 1);
+                Volatile.Write(ref remaining, claimedCount);
 
                 for (int w = 0; w < numWorkers; w++)
                 {
@@ -359,7 +456,7 @@ internal static unsafe class AesGcmParallelEngine
                     int len = (w == numWorkers - 1) ? totalBytes - offset : chunkBytes;
                     uint ctrStart = baseCounter + (uint)(w * chunkBlocks);
 
-                    ref var st = ref s_workerStates[w];
+                    ref WorkerState st = ref (w == 0 ? ref localState : ref s_workers[activeSlots[w - 1]].State);
                     st.RoundKeys = rkVec;
                     st.Input = pCipher + offset;
                     st.Output = null; // Do NOT touch caller plaintext buffer prior to tag verification
@@ -377,24 +474,29 @@ internal static unsafe class AesGcmParallelEngine
 
                     if (w > 0)
                     {
-                        s_startEvents[w - 1].Set();
+                        WorkerSlot slot = s_workers[activeSlots[w - 1]];
+                        slot.Completed = 0;
+                        slot.RemainingPtr = &remaining;
+                        slot.StartEvent.Set();
                     }
                 }
+                dispatched = true;
 
-                ExecuteWorkerJob(ref s_workerStates[0]);
+                ExecuteWorkerJob(ref localState);
 
-                WaitForWorkers();
+                WaitForClaimedWorkers(ref remaining, activeSlots);
 
-                // Combine GHASH results inside lock to prevent state race under concurrency
+                // Combine GHASH results from local + claimed worker slots
                 Vector128<ulong> hm = PowH(h1, chunkBlocks);
-                yAccum = Vector128.Create(s_workerStates[0].OutYLo, s_workerStates[0].OutYHi);
+                yAccum = Vector128.Create(localState.OutYLo, localState.OutYHi);
 
                 for (int w = 1; w < numWorkers; w++)
                 {
-                    int wLen = s_workerStates[w].Length;
+                    ref WorkerState st = ref s_workers[activeSlots[w - 1]].State;
+                    int wLen = st.Length;
                     int wBlocks = (wLen + 15) / 16;
                     Vector128<ulong> mult = (wBlocks == chunkBlocks) ? hm : PowH(h1, wBlocks);
-                    yAccum = AesGcmKernelPclmul.MulOne(yAccum, mult) ^ Vector128.Create(s_workerStates[w].OutYLo, s_workerStates[w].OutYHi);
+                    yAccum = AesGcmKernelPclmul.MulOne(yAccum, mult) ^ Vector128.Create(st.OutYLo, st.OutYHi);
                 }
 
                 Span<byte> lenBlock = stackalloc byte[16];
@@ -419,8 +521,8 @@ internal static unsafe class AesGcmParallelEngine
                     return false;
                 }
 
-                // Phase 2: Tag authenticated! Execute parallel CTR keystream decryption directly into destination.
-                Volatile.Write(ref s_remainingWorkers, numWorkers - 1);
+                // Phase 2: Tag authenticated! Reuse the same claimed slots for parallel CTR keystream decryption.
+                Volatile.Write(ref remaining, claimedCount);
 
                 for (int w = 0; w < numWorkers; w++)
                 {
@@ -428,7 +530,7 @@ internal static unsafe class AesGcmParallelEngine
                     int len = (w == numWorkers - 1) ? totalBytes - offset : chunkBytes;
                     uint ctrStart = baseCounter + (uint)(w * chunkBlocks);
 
-                    ref var st = ref s_workerStates[w];
+                    ref WorkerState st = ref (w == 0 ? ref localState : ref s_workers[activeSlots[w - 1]].State);
                     st.Input = pCipher + offset;
                     st.Output = pPlain + offset;
                     st.Length = len;
@@ -437,16 +539,26 @@ internal static unsafe class AesGcmParallelEngine
 
                     if (w > 0)
                     {
-                        s_startEvents[w - 1].Set();
+                        WorkerSlot slot = s_workers[activeSlots[w - 1]];
+                        slot.Completed = 0;
+                        slot.RemainingPtr = &remaining;
+                        slot.StartEvent.Set();
                     }
                 }
 
-                ExecuteWorkerJob(ref s_workerStates[0]);
+                ExecuteWorkerJob(ref localState);
 
-                WaitForWorkers();
+                WaitForClaimedWorkers(ref remaining, activeSlots);
+                return true;
             }
-
-            return true;
+            finally
+            {
+                if (dispatched)
+                {
+                    WaitForClaimedWorkers(ref remaining, activeSlots);
+                }
+                ReleaseWorkerSlots(activeSlots);
+            }
         }
     }
 }

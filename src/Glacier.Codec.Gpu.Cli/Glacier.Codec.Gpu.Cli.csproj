@@ -8,6 +8,7 @@
     <LangVersion>preview</LangVersion>
     <PublishAot>true</PublishAot>
     <IsAotCompatible>true</IsAotCompatible>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <PackageId>Glacier.Codec.Gpu.Cli</PackageId>
     <Version>1.2.3</Version>
     <Authors>Ian Cowley</Authors>

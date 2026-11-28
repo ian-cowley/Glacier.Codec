@@ -13,11 +13,17 @@ internal static unsafe class Blake3ParallelEngine
 {
     private static readonly int s_workerCount = Math.Max(1, Environment.ProcessorCount);
     private static readonly Thread[] s_threads = new Thread[s_workerCount - 1];
-    private static readonly AutoResetEvent[] s_startEvents = new AutoResetEvent[s_workerCount - 1];
-    private static int s_remainingWorkers;
-    private static readonly WorkerState[] s_workerStates = new WorkerState[s_workerCount];
-    private static readonly object s_dispatchLock = new();
+    private static readonly WorkerSlot[] s_workers = CreateWorkerSlots(s_workerCount - 1);
     private static volatile bool s_shutdown;
+
+    private sealed class WorkerSlot
+    {
+        public readonly AutoResetEvent StartEvent = new(false);
+        public int Claimed;
+        public int Completed;
+        public int* RemainingPtr;
+        public WorkerState State;
+    }
 
     private struct WorkerState
     {
@@ -30,16 +36,25 @@ internal static unsafe class Blake3ParallelEngine
         public uint Flags;
     }
 
+    private static WorkerSlot[] CreateWorkerSlots(int count)
+    {
+        var slots = new WorkerSlot[count];
+        for (int i = 0; i < count; i++)
+        {
+            slots[i] = new WorkerSlot();
+        }
+        return slots;
+    }
+
     static Blake3ParallelEngine()
     {
-        for (int i = 0; i < s_workerCount - 1; i++)
+        for (int i = 0; i < s_workers.Length; i++)
         {
-            s_startEvents[i] = new AutoResetEvent(false);
-            int threadIndex = i + 1;
-            s_threads[i] = new Thread(() => WorkerLoop(threadIndex))
+            int slotIndex = i;
+            s_threads[i] = new Thread(() => WorkerLoop(slotIndex))
             {
                 IsBackground = true,
-                Name = $"Blake3ParallelWorker-{threadIndex}",
+                Name = $"Blake3ParallelWorker-{slotIndex + 1}",
                 Priority = ThreadPriority.AboveNormal
             };
             s_threads[i].Start();
@@ -48,43 +63,87 @@ internal static unsafe class Blake3ParallelEngine
         AppDomain.CurrentDomain.ProcessExit += (_, _) =>
         {
             s_shutdown = true;
-            for (int i = 0; i < s_workerCount - 1; i++)
+            for (int i = 0; i < s_workers.Length; i++)
             {
-                s_startEvents[i]?.Set();
+                s_workers[i]?.StartEvent.Set();
             }
         };
     }
 
-    private static void WorkerLoop(int workerIndex)
+    private static void WorkerLoop(int slotIndex)
     {
-        int eventIdx = workerIndex - 1;
+        WorkerSlot slot = s_workers[slotIndex];
         while (!s_shutdown)
         {
-            s_startEvents[eventIdx].WaitOne();
+            slot.StartEvent.WaitOne();
             if (s_shutdown) break;
 
+            int* remPtr = slot.RemainingPtr;
             try
             {
-                ref var state = ref s_workerStates[workerIndex];
+                ref var state = ref slot.State;
                 ExecuteBatches(state.Input, state.Key, state.Cvs, state.StartBatch, state.BatchCount, state.BatchSize, state.Flags);
             }
             finally
             {
-                Interlocked.Decrement(ref s_remainingWorkers);
+                if (remPtr != null)
+                {
+                    Interlocked.Decrement(ref *remPtr);
+                }
+                Volatile.Write(ref slot.Completed, 1);
             }
         }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void WaitForWorkers()
+    private static int TryClaimWorkerSlots(int maxClaims, Span<int> claimedSlots)
     {
-        if (Volatile.Read(ref s_remainingWorkers) == 0)
-            return;
-
-        var spin = new SpinWait();
-        while (Volatile.Read(ref s_remainingWorkers) != 0)
+        int claimedCount = 0;
+        for (int i = 0; i < s_workers.Length && claimedCount < maxClaims; i++)
         {
-            spin.SpinOnce();
+            if (Volatile.Read(ref s_workers[i].Claimed) == 0 &&
+                Interlocked.CompareExchange(ref s_workers[i].Claimed, 1, 0) == 0)
+            {
+                claimedSlots[claimedCount++] = i;
+            }
+        }
+        return claimedCount;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void WaitForClaimedWorkers(ref int remaining, ReadOnlySpan<int> claimedSlots)
+    {
+        if (Volatile.Read(ref remaining) != 0)
+        {
+            var spin = new SpinWait();
+            while (Volatile.Read(ref remaining) != 0)
+            {
+                spin.SpinOnce();
+            }
+        }
+
+        for (int i = 0; i < claimedSlots.Length; i++)
+        {
+            WorkerSlot slot = s_workers[claimedSlots[i]];
+            if (Volatile.Read(ref slot.Completed) == 0)
+            {
+                var spin = new SpinWait();
+                while (Volatile.Read(ref slot.Completed) == 0)
+                {
+                    spin.SpinOnce();
+                }
+            }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ReleaseWorkerSlots(ReadOnlySpan<int> claimedSlots)
+    {
+        for (int i = 0; i < claimedSlots.Length; i++)
+        {
+            WorkerSlot slot = s_workers[claimedSlots[i]];
+            slot.RemainingPtr = null;
+            Volatile.Write(ref slot.Claimed, 0);
         }
     }
 
@@ -107,42 +166,70 @@ internal static unsafe class Blake3ParallelEngine
             int fullBatches = fullChunks / batchSize;
             int chunksHandledByBatches = fullBatches * batchSize;
 
-            int activeWorkers = Math.Min(s_workerCount, fullBatches);
-            if (activeWorkers <= 1)
+            int desiredWorkers = Math.Min(s_workerCount, fullBatches);
+            if (desiredWorkers <= 1)
             {
                 ExecuteBatches(pInput, key, pCvs, 0, fullBatches, batchSize, flags);
             }
             else
             {
-                lock (s_dispatchLock)
+                int maxClaims = desiredWorkers - 1;
+                Span<int> claimedSlots = maxClaims <= 128 ? stackalloc int[maxClaims] : new int[maxClaims];
+                int claimedCount = TryClaimWorkerSlots(maxClaims, claimedSlots);
+
+                if (claimedCount == 0)
                 {
-                    int batchesPerWorker = fullBatches / activeWorkers;
-                    int extraBatches = fullBatches % activeWorkers;
-                    int currentBatch = 0;
+                    ExecuteBatches(pInput, key, pCvs, 0, fullBatches, batchSize, flags);
+                }
+                else
+                {
+                    int activeWorkers = claimedCount + 1;
+                    ReadOnlySpan<int> activeSlots = claimedSlots.Slice(0, claimedCount);
+                    int remaining = 0;
+                    bool dispatched = false;
 
-                    int w0Count = batchesPerWorker + (extraBatches > 0 ? 1 : 0);
-                    currentBatch += w0Count;
-
-                    Volatile.Write(ref s_remainingWorkers, activeWorkers - 1);
-                    for (int w = 1; w < activeWorkers; w++)
+                    try
                     {
-                        int count = batchesPerWorker + (w < extraBatches ? 1 : 0);
-                        s_workerStates[w].Input = pInput;
-                        s_workerStates[w].Key = key;
-                        s_workerStates[w].Cvs = pCvs;
-                        s_workerStates[w].StartBatch = currentBatch;
-                        s_workerStates[w].BatchCount = count;
-                        s_workerStates[w].BatchSize = batchSize;
-                        s_workerStates[w].Flags = flags;
-                        currentBatch += count;
+                        int batchesPerWorker = fullBatches / activeWorkers;
+                        int extraBatches = fullBatches % activeWorkers;
+                        int currentBatch = 0;
 
-                        s_startEvents[w - 1].Set();
+                        int w0Count = batchesPerWorker + (extraBatches > 0 ? 1 : 0);
+                        currentBatch += w0Count;
+
+                        Volatile.Write(ref remaining, claimedCount);
+                        for (int w = 1; w < activeWorkers; w++)
+                        {
+                            int count = batchesPerWorker + (w < extraBatches ? 1 : 0);
+                            WorkerSlot slot = s_workers[activeSlots[w - 1]];
+                            slot.State.Input = pInput;
+                            slot.State.Key = key;
+                            slot.State.Cvs = pCvs;
+                            slot.State.StartBatch = currentBatch;
+                            slot.State.BatchCount = count;
+                            slot.State.BatchSize = batchSize;
+                            slot.State.Flags = flags;
+                            slot.Completed = 0;
+                            slot.RemainingPtr = &remaining;
+                            currentBatch += count;
+
+                            slot.StartEvent.Set();
+                        }
+                        dispatched = true;
+
+                        // Worker 0 executes on calling thread
+                        ExecuteBatches(pInput, key, pCvs, 0, w0Count, batchSize, flags);
+
+                        WaitForClaimedWorkers(ref remaining, activeSlots);
                     }
-
-                    // Worker 0 executes on calling thread
-                    ExecuteBatches(pInput, key, pCvs, 0, w0Count, batchSize, flags);
-
-                    WaitForWorkers();
+                    finally
+                    {
+                        if (dispatched)
+                        {
+                            WaitForClaimedWorkers(ref remaining, activeSlots);
+                        }
+                        ReleaseWorkerSlots(activeSlots);
+                    }
                 }
             }
 

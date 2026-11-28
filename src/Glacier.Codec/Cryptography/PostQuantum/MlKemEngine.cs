@@ -288,11 +288,13 @@ public abstract class MlKemEngine : IKeyEncapsulationMechanism, IDisposable
 
         // 3. K_reject = J(z || c) = SHAKE-256(z || c, 32)
         Span<byte> kReject = stackalloc byte[32];
-        var shakeReject = new KeccakSponge(rateInBytes: 136);
-        shakeReject.Absorb(z);
-        shakeReject.Absorb(ciphertext.Slice(0, ctLen));
-        shakeReject.Pad(0x1F);
-        shakeReject.Squeeze(kReject);
+        using (var shakeReject = new KeccakSponge(rateInBytes: 136))
+        {
+            shakeReject.Absorb(z);
+            shakeReject.Absorb(ciphertext.Slice(0, ctLen));
+            shakeReject.Pad(0x1F);
+            shakeReject.Squeeze(kReject);
+        }
 
         // 4. c' = K-PKE.Encrypt(ek_PKE, m', r')
         Span<byte> cPrime = stackalloc byte[ctLen];

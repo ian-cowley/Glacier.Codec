@@ -67,4 +67,45 @@ public class GpuBlake3Tests
             Assert.Equal(0u, firstWord & mask);
         }
     }
+
+    [Fact]
+    [Trait("Category", "Gpu")]
+    public void Blake3NonceSearch_Leading16And12BitsZero_MatchesHexPrefix()
+    {
+        if (!CuDriver.IsAvailable || GpuDevice.GetDeviceCount() == 0) return;
+
+        using var device = GpuDevice.Create(0);
+        using var engine = new GpuBlake3Engine(device);
+
+        byte[] headerTemplate = new byte[64];
+        new Random(777).NextBytes(headerTemplate.AsSpan(0, 60));
+
+        // 16-bit leading-zero prefix mask in little-endian word 0: 0x0000FFFF
+        uint[] matches16 = engine.SearchNonce(headerTemplate, 0, 0x0000FFFFu, 500_000, flags: 0x0B, maxResults: 8);
+        Assert.NotEmpty(matches16);
+
+        Span<byte> hash = stackalloc byte[32];
+        foreach (uint nonce in matches16)
+        {
+            byte[] block = (byte[])headerTemplate.Clone();
+            BitConverter.TryWriteBytes(block.AsSpan(60, 4), nonce);
+            Blake3Hasher.Hash(block, hash);
+            Assert.Equal(0, hash[0]);
+            Assert.Equal(0, hash[1]);
+            Assert.StartsWith("0000", Convert.ToHexString(hash));
+        }
+
+        // 12-bit sub-byte prefix mask in little-endian word 0: 0x0000F0FF
+        uint[] matches12 = engine.SearchNonce(headerTemplate, 0, 0x0000F0FFu, 100_000, flags: 0x0B, maxResults: 8);
+        Assert.NotEmpty(matches12);
+
+        foreach (uint nonce in matches12)
+        {
+            byte[] block = (byte[])headerTemplate.Clone();
+            BitConverter.TryWriteBytes(block.AsSpan(60, 4), nonce);
+            Blake3Hasher.Hash(block, hash);
+            Assert.Equal(0, hash[0]);
+            Assert.Equal(0, hash[1] & 0xF0);
+        }
+    }
 }

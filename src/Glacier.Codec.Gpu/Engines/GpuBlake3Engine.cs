@@ -104,7 +104,7 @@ public sealed class GpuBlake3Engine : IDisposable
     /// </summary>
     /// <param name="headerTemplate">60-byte fixed header prefix (the last 4 bytes are tested nonces).</param>
     /// <param name="baseNonce">Starting nonce offset.</param>
-    /// <param name="targetZerosMask">Difficulty bitmask (e.g. 0xFFFF0000 requires leading 16 bits zero).</param>
+    /// <param name="targetZerosMask">Difficulty bitmask applied to little-endian output word 0 (<c>out[0]</c>, e.g. <c>0x0000FFFF</c> requires leading 16 bits <c>hash[0..1]</c> zero).</param>
     /// <param name="searchCount">Number of nonces to evaluate in parallel.</param>
     /// <param name="flags">BLAKE3 chunk flags (default 0x0B = CHUNK_START | CHUNK_END | ROOT).</param>
     /// <param name="maxResults">Maximum number of winning nonces to record.</param>
@@ -120,6 +120,8 @@ public sealed class GpuBlake3Engine : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (headerTemplate.Length < 60)
             throw new ArgumentException("Header template must be at least 60 bytes.", nameof(headerTemplate));
+        if (searchCount == 0 || maxResults == 0)
+            return Array.Empty<uint>();
 
         _device.MakeCurrent();
 
